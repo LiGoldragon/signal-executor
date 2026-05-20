@@ -43,10 +43,10 @@ workspace at
 
 | Item | Shape | Use |
 |---|---|---|
-| `Lowering` | trait | per-daemon contract-to-Sema bridge; three associated types (`Operation`, `Reply`, `RejectionReason`) and two methods (`lower`, `reply_from_effects`). |
+| `Lowering` | trait | per-daemon contract-to-Sema bridge; two associated types (`Operation`, `Reply`) and two methods (`lower`, `reply_from_effects`). |
 | `SemaEngine` | trait | atomic commit point with one associated type (`Error`) and one method (`execute_atomic`). |
 | `Executor<L, S>` | struct | composes `L: Lowering` and `S: SemaEngine` over a shared `ObserverSet`; exposes `execute(Request<L::Operation>) -> ExecutorOutcome<L, S>`. |
-| `ExecutorOutcome<L, S>` | enum | three terminal variants: `Accepted { reply, effects }`, `LoweringRejected { reply, reason }`, `EngineRejected { reply, error }`. Borrow `reply()` for the wire shape; `is_accepted()` / `is_rejected()` for branching. |
+| `ExecutorOutcome<L, S>` | enum | three terminal variants: `Accepted { reply, effects }`, `LoweringRejected { reply }`, `EngineRejected { reply, error }`. Borrow `reply()` for the wire shape; `is_accepted()` / `is_rejected()` for branching. |
 | `SemaEffect` | struct | what happened after a `SemaOperation` committed: `operation` plus `outcome: SemaEffectOutcome`. |
 | `SemaEffectOutcome` | enum | closed variant set keyed off operation class: `Wrote { rows_written, rows_matched }`, `Read { rows_read }`, `Stream { subscription_token }`, `Validated { predicate_held }`. |
 | `ObserverChannel<Operation>` | trait | per-channel publish surface the executor calls. Two methods: `publish_operation_received(&Operation)` and `publish_sema_effect_emitted(&SemaEffect)`. |
@@ -87,12 +87,12 @@ Three terminal paths, one terminal variant per path:
 ```mermaid
 flowchart TD
     request["Request&lt;L::Operation&gt;"]
-    lower["lower() for each op"]
-    engine["execute_atomic(ops)"]
-    map["reply_from_effects() for each op"]
+    lower["lower() for each operation"]
+    engine["execute_atomic(operations)"]
+    map["reply_from_effects() for each operation"]
 
     accepted["ExecutorOutcome::Accepted<br/>{ reply, effects }"]
-    lrej["ExecutorOutcome::LoweringRejected<br/>{ reply, reason }"]
+    lrej["ExecutorOutcome::LoweringRejected<br/>{ reply }"]
     erej["ExecutorOutcome::EngineRejected<br/>{ reply, error }"]
 
     request --> lower
@@ -106,7 +106,7 @@ flowchart TD
 | Path | When | Wire `Reply` | Daemon-side carry |
 |---|---|---|---|
 | `Accepted` | Every operation lowered and the engine committed atomically. | `Reply::Accepted { outcome: Completed, per_operation: NonEmpty<SubReply::Ok { payload }> }`. | `effects: Vec<SemaEffect>` for post-execution use (logs, metrics, derived events). |
-| `LoweringRejected` | A `Lowering::lower` call returned `Err`. The engine was not called; no state effect occurred. | `Reply::Rejected { reason: RequestRejectionReason::Internal }`. | `reason: L::RejectionReason` -- the daemon's typed domain rejection. |
+| `LoweringRejected` | A `Lowering::lower` call returned `Err(contract_reply)`. The engine was not called; no state effect occurred. | `Reply::Accepted { outcome: Aborted { failed_at, reason: DomainRejection }, per_operation: NonEmpty<Invalidated / Failed { detail: Some(contract_reply) } / Skipped> }`. | Contract-domain rejection rides in the failed operation's typed reply detail. |
 | `EngineRejected` | `SemaEngine::execute_atomic` returned `Err`. No state effect committed (atomicity contract). | `Reply::Rejected { reason: RequestRejectionReason::Internal }`. | `error: S::Error` -- the engine's typed failure cause. |
 
 Post-commit publication failures (the observer set's
@@ -130,8 +130,8 @@ The executor preserves request order:
    `lower` and `reply_from_effects` -- never re-orders.
 2. The output `Reply::Accepted` carries
    `NonEmpty<SubReply<L::Reply>>`. The executor builds it from the
-   `(head_op, tail_ops)` split of the input non-empty, preserving
-   non-emptiness without re-checking shape.
+   `(head_operation, tail_operations)` split of the input
+   non-empty, preserving non-emptiness without re-checking shape.
 
 A `Lowering` impl that produces an empty `Vec` for one operation
 (legitimate for validation-only or no-op operations) still
@@ -150,22 +150,22 @@ The executor publishes in fixed order:
 This is a hard ordering. Tests in `tests/round_trip.rs` witness it
 via a `RecordingChannel`.
 
-On lowering rejection, every operation up to (and including) the
-rejecting one is observed under `OperationReceived`, but no
-`SemaEffectEmitted` fires because no effect was committed.
+On lowering rejection, every operation in the received request is
+observed under `OperationReceived`, but no `SemaEffectEmitted`
+fires because no effect was committed.
 
 On engine rejection, every operation is observed, but again no
 `SemaEffectEmitted` fires because no effect was committed.
 
 ```mermaid
 flowchart LR
-    op1["OperationReceived(op_1)"]
-    op2["OperationReceived(op_2)"]
-    opN["OperationReceived(op_N)"]
+    operation1["OperationReceived(operation_1)"]
+    operation2["OperationReceived(operation_2)"]
+    operationN["OperationReceived(operation_N)"]
     e1["SemaEffectEmitted(effect_1)"]
     eM["SemaEffectEmitted(effect_M)"]
 
-    op1 --> op2 --> opN --> e1 --> eM
+    operation1 --> operation2 --> operationN --> e1 --> eM
 ```
 
 Where:
@@ -238,7 +238,7 @@ src/effect.rs    SemaEffect and SemaEffectOutcome with witness predicate
 src/engine.rs    SemaEngine trait (associated Error type, execute_atomic)
 src/error.rs     crate-boundary Error enum (reserved input-shape variants)
 src/executor.rs  Executor struct and ExecutorOutcome enum
-src/lowering.rs  Lowering trait (Operation, Reply, RejectionReason)
+src/lowering.rs  Lowering trait (Operation, Reply)
 src/observer.rs  ObserverChannel trait, ObserverSet struct,
                  RecordingChannel + RecordedEvent for tests
 
@@ -250,7 +250,7 @@ tests/effect.rs       Unit tests for SemaEffect::is_write_commit
                       across all operation classes and outcomes
 tests/observer.rs     Unit tests for ObserverSet, RecordingChannel,
                       RecordedEvent ordering, and Arc-shared channels
-tests/round_trip.rs   End-to-end tests: single-op accepted, multi-op
+tests/round_trip.rs   End-to-end tests: single-operation accepted, multi-operation
                       accepted, lowering rejection (engine never
                       called), engine rejection (no state visible),
                       observer publication ordering, empty-lowering,

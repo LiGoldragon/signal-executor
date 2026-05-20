@@ -9,8 +9,9 @@
 //!   bookkeeping only); witnesses the empty-lowering path.
 //!
 //! Rejection: `Increment(0)` and `Decrement(0)` are rejected at the
-//! lowering stage with `CounterRejectionReason::ZeroMagnitude` so we
-//! witness pre-execution rejection without calling the engine.
+//! lowering stage with `CounterReply::Rejected(CounterRejection::ZeroMagnitude)`
+//! so we witness domain rejection carried in the contract reply
+//! vocabulary without calling the engine.
 //!
 //! Engine: `CounterEngine` returns canned effects shaped to mirror
 //! the operation classes (`Wrote` for Assert/Mutate/Retract, `Read`
@@ -44,13 +45,13 @@ pub enum CounterReply {
     Decremented { rows_matched: u64 },
     Queried { rows_read: u64 },
     TrackingReset,
+    Rejected(CounterRejection),
 }
 
-/// Counter-side lowering rejection reasons. The daemon-internal
-/// typed reason carried through `ExecutorOutcome::LoweringRejected`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
-pub enum CounterRejectionReason {
-    #[error("zero-magnitude operation is not permitted")]
+/// Counter-side domain rejection detail carried by
+/// `CounterReply::Rejected`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CounterRejection {
     ZeroMagnitude,
 }
 
@@ -73,17 +74,13 @@ impl Default for CounterLowering {
 impl Lowering for CounterLowering {
     type Operation = CounterOperation;
     type Reply = CounterReply;
-    type RejectionReason = CounterRejectionReason;
 
-    fn lower(
-        &self,
-        operation: &Self::Operation,
-    ) -> Result<Vec<SemaOperation>, Self::RejectionReason> {
+    fn lower(&self, operation: &Self::Operation) -> Result<Vec<SemaOperation>, Self::Reply> {
         match operation {
             CounterOperation::Increment(magnitude) | CounterOperation::Decrement(magnitude)
                 if *magnitude == 0 =>
             {
-                Err(CounterRejectionReason::ZeroMagnitude)
+                Err(CounterReply::Rejected(CounterRejection::ZeroMagnitude))
             }
             CounterOperation::Increment(_) => Ok(vec![SemaOperation::Assert]),
             CounterOperation::Decrement(_) => Ok(vec![SemaOperation::Retract]),
@@ -119,7 +116,7 @@ fn first_wrote_for(effects: &[SemaEffect], wanted: SemaOperation) -> u64 {
     effects
         .iter()
         .find_map(|effect| match (effect.operation, &effect.outcome) {
-            (op, SemaEffectOutcome::Wrote { rows_written, .. }) if op == wanted => {
+            (operation, SemaEffectOutcome::Wrote { rows_written, .. }) if operation == wanted => {
                 Some(*rows_written)
             }
             _ => None,
@@ -131,7 +128,7 @@ fn first_matched_for(effects: &[SemaEffect], wanted: SemaOperation) -> u64 {
     effects
         .iter()
         .find_map(|effect| match (effect.operation, &effect.outcome) {
-            (op, SemaEffectOutcome::Wrote { rows_matched, .. }) if op == wanted => {
+            (operation, SemaEffectOutcome::Wrote { rows_matched, .. }) if operation == wanted => {
                 Some(*rows_matched)
             }
             _ => None,
@@ -143,7 +140,9 @@ fn first_read_for(effects: &[SemaEffect], wanted: SemaOperation) -> u64 {
     effects
         .iter()
         .find_map(|effect| match (effect.operation, &effect.outcome) {
-            (op, SemaEffectOutcome::Read { rows_read }) if op == wanted => Some(*rows_read),
+            (operation, SemaEffectOutcome::Read { rows_read }) if operation == wanted => {
+                Some(*rows_read)
+            }
             _ => None,
         })
         .unwrap_or(0)
@@ -173,7 +172,7 @@ impl CounterEngine {
         }
     }
 
-    pub fn committed_op_count(&self) -> u64 {
+    pub fn committed_operation_count(&self) -> u64 {
         self.committed
     }
 }
@@ -187,38 +186,41 @@ impl Default for CounterEngine {
 impl SemaEngine for CounterEngine {
     type Error = PoisonError;
 
-    fn execute_atomic(&mut self, ops: Vec<SemaOperation>) -> Result<Vec<SemaEffect>, Self::Error> {
+    fn execute_atomic(
+        &mut self,
+        operations: Vec<SemaOperation>,
+    ) -> Result<Vec<SemaEffect>, Self::Error> {
         if self.poisoned {
             return Err(PoisonError);
         }
-        let effects: Vec<SemaEffect> = ops
+        let effects: Vec<SemaEffect> = operations
             .into_iter()
-            .map(|op| match op {
+            .map(|operation| match operation {
                 SemaOperation::Assert => SemaEffect::new(
-                    op,
+                    operation,
                     SemaEffectOutcome::Wrote {
                         rows_written: 1,
                         rows_matched: 0,
                     },
                 ),
                 SemaOperation::Mutate | SemaOperation::Retract => SemaEffect::new(
-                    op,
+                    operation,
                     SemaEffectOutcome::Wrote {
                         rows_written: 1,
                         rows_matched: 1,
                     },
                 ),
                 SemaOperation::Match => {
-                    SemaEffect::new(op, SemaEffectOutcome::Read { rows_read: 7 })
+                    SemaEffect::new(operation, SemaEffectOutcome::Read { rows_read: 7 })
                 }
                 SemaOperation::Subscribe => SemaEffect::new(
-                    op,
+                    operation,
                     SemaEffectOutcome::Stream {
                         subscription_token: 42,
                     },
                 ),
                 SemaOperation::Validate => SemaEffect::new(
-                    op,
+                    operation,
                     SemaEffectOutcome::Validated {
                         predicate_held: true,
                     },

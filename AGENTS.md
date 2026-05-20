@@ -26,8 +26,8 @@ contract; it has no public wire surface of its own.
 
 - Keep this crate library-only.
 - Keep component-domain payloads out; everything is generic over
-  `Lowering::Operation`, `Lowering::Reply`, and
-  `Lowering::RejectionReason`.
+  `Lowering::Operation` and `Lowering::Reply`. Domain rejection is
+  contract-local reply vocabulary, carried in `SubReply::Failed`.
 - Do not depend on `sema-engine` directly. The actual engine that
   commits Sema operations is reached through the `SemaEngine`
   trait, which daemons implement when wiring their backend.

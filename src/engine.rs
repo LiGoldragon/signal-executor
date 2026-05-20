@@ -14,7 +14,7 @@ use signal_sema::SemaOperation;
 ///
 /// Implementors guarantee:
 ///
-/// * either every operation in `ops` commits, producing one
+/// * either every operation in `operations` commits, producing one
 ///   [`SemaEffect`] per operation in request order, or
 /// * no operation commits, and the call returns
 ///   [`Err`].
@@ -34,7 +34,10 @@ pub trait SemaEngine {
     /// when atomic commit fails.
     type Error;
 
-    /// Commit `ops` atomically. Returns one effect per operation
+    /// Commit `operations` atomically. Returns one effect per operation
     /// in request order on success, or the typed error on failure.
-    fn execute_atomic(&mut self, ops: Vec<SemaOperation>) -> Result<Vec<SemaEffect>, Self::Error>;
+    fn execute_atomic(
+        &mut self,
+        operations: Vec<SemaOperation>,
+    ) -> Result<Vec<SemaEffect>, Self::Error>;
 }

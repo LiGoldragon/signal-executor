@@ -9,8 +9,8 @@
 //!
 //! The trait is the only place a daemon's domain knowledge sits.
 //! The [`Executor`](crate::Executor) machinery is fully generic
-//! over the trait's associated types: the operation enum, the
-//! reply enum, and the typed rejection reason.
+//! over the trait's associated types: the operation enum and the
+//! reply enum.
 
 use signal_frame::RequestPayload;
 use signal_sema::SemaOperation;
@@ -20,7 +20,7 @@ use crate::effect::SemaEffect;
 /// Daemon-side bridge between contract operations and Sema operations.
 ///
 /// Implemented by each triad daemon for its public channel. The
-/// trait owns three associated types:
+/// trait owns two associated types:
 ///
 /// * `Operation` -- the channel's operation enum (e.g.
 ///   `SpiritOperation`, emitted by `signal_channel!`); must satisfy
@@ -29,12 +29,11 @@ use crate::effect::SemaEffect;
 /// * `Reply` -- the channel's reply payload enum (e.g.
 ///   `SpiritReply`); each operation's reply variant is selected by
 ///   [`Self::reply_from_effects`].
-/// * `RejectionReason` -- the daemon-internal typed reason for a
-///   pre-execution lowering failure. Surfaced to the daemon for
-///   observability and logging; the on-wire reply on lowering
-///   failure is the kernel `Reply::Rejected { reason:
-///   RequestRejectionReason::Internal }` per signal-frame's typed
-///   shape.
+///
+/// Domain rejection is part of the channel's reply vocabulary. If
+/// lowering rejects an operation, return the contract-local reply
+/// variant from [`Self::lower`]; the executor carries it as
+/// `SubReply::Failed.detail` inside an aborted accepted frame reply.
 pub trait Lowering {
     /// The channel's operation enum.
     type Operation: RequestPayload;
@@ -44,25 +43,16 @@ pub trait Lowering {
     /// [`Self::reply_from_effects`].
     type Reply;
 
-    /// Daemon-internal typed reason for a pre-execution lowering
-    /// failure. The executor surfaces a kernel `Reply::Rejected
-    /// { reason: RequestRejectionReason::Internal }` on the wire
-    /// and carries this typed reason on the daemon side via
-    /// [`ExecutorOutcome::LoweringRejected`](crate::ExecutorOutcome::LoweringRejected).
-    type RejectionReason;
-
     /// Translate a single contract operation into zero-or-more Sema
     /// operations. An empty `Vec` means "no state effect" and is
     /// legitimate for validation-only or no-op operations.
     ///
-    /// Returning `Err` rejects the entire request before any Sema
-    /// operation runs. The atomicity contract guarantees no Sema
-    /// effect is visible to the caller when this method returns
-    /// `Err`.
-    fn lower(
-        &self,
-        operation: &Self::Operation,
-    ) -> Result<Vec<SemaOperation>, Self::RejectionReason>;
+    /// Returning `Err(contract_reply)` aborts the entire request
+    /// before any Sema operation runs. The executor returns an
+    /// accepted-but-aborted frame reply, marks earlier planned
+    /// operations invalidated, marks later operations skipped, and
+    /// carries `contract_reply` in the failed operation's detail.
+    fn lower(&self, operation: &Self::Operation) -> Result<Vec<SemaOperation>, Self::Reply>;
 
     /// Build the per-operation reply variant from the Sema effects
     /// the engine emitted for the request.

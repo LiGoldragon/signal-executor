@@ -15,8 +15,8 @@ and the broader migration spec at
 
 ## What this crate owns
 
-- `Lowering` -- per-daemon trait with three associated types
-  (`Operation`, `Reply`, `RejectionReason`) and two methods
+- `Lowering` -- per-daemon trait with two associated types
+  (`Operation`, `Reply`) and two methods
   (`lower`, `reply_from_effects`). The contract-to-Sema bridge.
 - `SemaEngine` -- atomic-commit trait with one associated type
   (`Error`) and one method (`execute_atomic`).
@@ -52,6 +52,12 @@ none did. On `Err`, the wire `Reply` is `Reply::Rejected { reason:
 RequestRejectionReason::Internal }` and the typed engine error is
 carried via `ExecutorOutcome::EngineRejected`.
 
+Domain rejection during lowering is not a kernel rejection. A
+`Lowering::lower` `Err(contract_reply)` returns
+`Reply::Accepted { outcome: Aborted { .. }, per_operation: ... }`;
+the failed operation carries the contract-local reply in
+`SubReply::Failed.detail`.
+
 See `ARCHITECTURE.md` for the full failure-mode taxonomy, reply
 correlation contract, and observer publication ordering.
 
@@ -66,13 +72,11 @@ struct SpiritLowering { /* state */ }
 impl Lowering for SpiritLowering {
     type Operation = SpiritOperation;
     type Reply = SpiritReply;
-    type RejectionReason = SpiritRejectionReason;
-
-    fn lower(&self, op: &Self::Operation)
-        -> Result<Vec<SemaOperation>, Self::RejectionReason>
+    fn lower(&self, operation: &Self::Operation)
+        -> Result<Vec<SemaOperation>, Self::Reply>
     { /* ... */ }
 
-    fn reply_from_effects(&self, op: &Self::Operation, effects: &[SemaEffect])
+    fn reply_from_effects(&self, operation: &Self::Operation, effects: &[SemaEffect])
         -> Self::Reply
     { /* ... */ }
 }
@@ -81,7 +85,7 @@ struct SpiritEngine { /* ... */ }
 
 impl SemaEngine for SpiritEngine {
     type Error = SpiritEngineError;
-    fn execute_atomic(&mut self, ops: Vec<SemaOperation>)
+    fn execute_atomic(&mut self, operations: Vec<SemaOperation>)
         -> Result<Vec<SemaEffect>, Self::Error>
     { /* ... */ }
 }
