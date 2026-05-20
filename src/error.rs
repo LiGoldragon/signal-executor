@@ -1,11 +1,9 @@
 //! Crate-boundary errors.
 //!
 //! The executor itself produces no errors at the boundary -- it
-//! returns an [`ExecutorOutcome`](crate::ExecutorOutcome) that
-//! discriminates accepted, lowering-rejected, and engine-rejected
-//! paths typed-summandwise. This [`enum@Error`] enum covers structural
-//! preconditions on inputs that fail before the executor's
-//! orchestration starts.
+//! returns a [`signal_frame::Reply`] directly (per /246 §1). This
+//! [`enum@Error`] enum covers structural preconditions on inputs
+//! that fail before the executor's orchestration starts.
 
 use thiserror::Error;
 
