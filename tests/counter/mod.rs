@@ -88,6 +88,8 @@ fn first_read_for(effects: &[SemaEffect], wanted: SemaOperation) -> u64 {
 }
 
 pub struct CounterEngine { committed: u64, poisoned: bool }
+#[allow(dead_code)]
+#[allow(dead_code)]
 impl CounterEngine {
     pub fn new() -> Self { Self { committed: 0, poisoned: false } }
     pub fn with_poison() -> Self { Self { committed: 0, poisoned: true } }
