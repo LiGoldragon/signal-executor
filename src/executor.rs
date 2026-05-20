@@ -1,7 +1,8 @@
 //! Executor: orchestrates contract operation to component command execution.
 
 use signal_frame::{
-    AcceptedOutcome, BatchFailureReason, NonEmpty, OperationFailureReason, Reply, Request, SubReply,
+    AcceptedOutcome, BatchFailureReason, CommitStatus, NonEmpty, OperationFailureReason, Reply,
+    Request, RetryClassification, SubReply,
 };
 
 use crate::engine::CommandExecutor;
@@ -155,7 +156,11 @@ fn batch_aborted_reply<P>(total_operations: usize, reason: BatchFailureReason) -
     )
     .expect("requests are statically non-empty");
     Reply::Accepted {
-        outcome: AcceptedOutcome::BatchAborted { reason },
+        outcome: AcceptedOutcome::BatchAborted {
+            reason,
+            retry: RetryClassification::Unknown,
+            commit: CommitStatus::NotCommitted,
+        },
         per_operation,
     }
 }

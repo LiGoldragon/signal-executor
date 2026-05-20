@@ -22,8 +22,8 @@ use signal_executor::{
     SemaEffectOutcome,
 };
 use signal_frame::{
-    AcceptedOutcome, BatchFailureReason, OperationFailureReason, Reply, RequestBuilder,
-    RequestPayload, SubReply,
+    AcceptedOutcome, BatchFailureReason, CommitStatus, OperationFailureReason, Reply,
+    RequestBuilder, RequestPayload, RetryClassification, SubReply,
 };
 use signal_sema::SemaOperation;
 
@@ -216,6 +216,8 @@ fn engine_rejection_returns_batch_aborted_reply() {
         outcome,
         AcceptedOutcome::BatchAborted {
             reason: BatchFailureReason::EngineRejected,
+            retry: RetryClassification::Unknown,
+            commit: CommitStatus::NotCommitted,
         },
     );
     assert_eq!(per_operation.len(), 1);
@@ -266,6 +268,8 @@ fn multi_operation_engine_rejection_is_all_or_nothing() {
         outcome,
         AcceptedOutcome::BatchAborted {
             reason: BatchFailureReason::EngineRejected,
+            retry: RetryClassification::Unknown,
+            commit: CommitStatus::NotCommitted,
         },
     );
     assert_eq!(per_operation.len(), 3);
@@ -410,6 +414,8 @@ fn engine_rejection_does_not_carry_contract_reply() {
                 outcome,
                 AcceptedOutcome::BatchAborted {
                     reason: BatchFailureReason::EngineRejected,
+                    retry: RetryClassification::Unknown,
+                    commit: CommitStatus::NotCommitted,
                 },
             );
             assert!(matches!(per_operation.head(), SubReply::Invalidated));
