@@ -20,6 +20,7 @@ thiserror    = "2"
 
 [dev-dependencies]
 nota-codec = { git = "https://github.com/LiGoldragon/nota-codec.git", branch = "main" }
+tokio      = { version = "1", default-features = false, features = ["macros", "rt"] }
 
 [lints.rust]
 unsafe_code = "forbid"

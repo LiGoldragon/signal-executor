@@ -36,8 +36,8 @@ use counter::{
 
 type CounterCommandEffect = CommandEffect<CounterCommand, CounterEffectOutcome>;
 
-#[test]
-fn single_increment_round_trip() {
+#[tokio::test]
+async fn single_increment_round_trip() {
     let mut executor = Executor::new(
         CounterLowering::new(),
         CounterEngine::new(),
@@ -45,7 +45,7 @@ fn single_increment_round_trip() {
     );
 
     let request = CounterOperation::Increment(3).into_request();
-    let reply = executor.execute(request);
+    let reply = executor.execute(request).await;
 
     let Reply::Accepted {
         outcome,
@@ -66,8 +66,8 @@ fn single_increment_round_trip() {
     assert_eq!(*rows_written, 1);
 }
 
-#[test]
-fn multi_operation_round_trip_correlates_replies() {
+#[tokio::test]
+async fn multi_operation_round_trip_correlates_replies() {
     let mut executor = Executor::new(
         CounterLowering::new(),
         CounterEngine::new(),
@@ -81,7 +81,7 @@ fn multi_operation_round_trip_correlates_replies() {
         .build()
         .expect("non-empty request builds");
 
-    let reply = executor.execute(request);
+    let reply = executor.execute(request).await;
     let Reply::Accepted {
         outcome,
         per_operation,
@@ -110,8 +110,8 @@ fn multi_operation_round_trip_correlates_replies() {
     assert!(matches!(payload, CounterReply::Decremented { .. }));
 }
 
-#[test]
-fn single_operation_lowering_rejection_returns_typed_failed_subreply() {
+#[tokio::test]
+async fn single_operation_lowering_rejection_returns_typed_failed_subreply() {
     let mut executor = Executor::new(
         CounterLowering::new(),
         CounterEngine::new(),
@@ -120,7 +120,7 @@ fn single_operation_lowering_rejection_returns_typed_failed_subreply() {
 
     // 0 is the rejected magnitude per the Counter lowering.
     let request = CounterOperation::Increment(0).into_request();
-    let reply = executor.execute(request);
+    let reply = executor.execute(request).await;
 
     let Reply::Accepted {
         outcome,
@@ -151,8 +151,8 @@ fn single_operation_lowering_rejection_returns_typed_failed_subreply() {
     assert_eq!(executor.command_executor().committed_operation_count(), 0);
 }
 
-#[test]
-fn multi_operation_lowering_rejection_invalidates_skips_and_fails() {
+#[tokio::test]
+async fn multi_operation_lowering_rejection_invalidates_skips_and_fails() {
     let mut executor = Executor::new(
         CounterLowering::new(),
         CounterEngine::new(),
@@ -166,7 +166,7 @@ fn multi_operation_lowering_rejection_invalidates_skips_and_fails() {
         .build()
         .expect("non-empty request builds");
 
-    let reply = executor.execute(request);
+    let reply = executor.execute(request).await;
 
     let Reply::Accepted {
         outcome,
@@ -199,13 +199,13 @@ fn multi_operation_lowering_rejection_invalidates_skips_and_fails() {
     assert_eq!(executor.command_executor().committed_operation_count(), 0);
 }
 
-#[test]
-fn engine_rejection_returns_batch_aborted_reply() {
+#[tokio::test]
+async fn engine_rejection_returns_batch_aborted_reply() {
     let engine = CounterEngine::with_poison();
     let mut executor = Executor::new(CounterLowering::new(), engine, ObserverSet::no_op());
 
     let request = CounterOperation::Increment(1).into_request();
-    let reply = executor.execute(request);
+    let reply = executor.execute(request).await;
 
     let Reply::Accepted {
         outcome,
@@ -237,13 +237,13 @@ fn engine_rejection_returns_batch_aborted_reply() {
     assert_eq!(executor.command_executor().committed_operation_count(), 0);
 }
 
-#[test]
-fn engine_failure_classification_is_projected_to_batch_abort_reply() {
+#[tokio::test]
+async fn engine_failure_classification_is_projected_to_batch_abort_reply() {
     let engine = CounterEngine::with_lost_commit_acknowledgement();
     let mut executor = Executor::new(CounterLowering::new(), engine, ObserverSet::no_op());
 
     let request = CounterOperation::Increment(1).into_request();
-    let reply = executor.execute(request);
+    let reply = executor.execute(request).await;
 
     let Reply::Accepted { outcome, .. } = reply else {
         panic!("expected accepted-but-batch-aborted reply");
@@ -262,8 +262,8 @@ fn engine_failure_classification_is_projected_to_batch_abort_reply() {
     );
 }
 
-#[test]
-fn multi_operation_engine_rejection_is_all_or_nothing() {
+#[tokio::test]
+async fn multi_operation_engine_rejection_is_all_or_nothing() {
     // Witnesses the atomicity contract: when execute_atomic_batch returns
     // Err for a multi-operation request, no effect is visible to the
     // caller (the engine's commit counter stays at 0) and the
@@ -282,7 +282,7 @@ fn multi_operation_engine_rejection_is_all_or_nothing() {
         .build()
         .expect("non-empty request builds");
 
-    let reply = executor.execute(request);
+    let reply = executor.execute(request).await;
 
     let Reply::Accepted {
         outcome,
@@ -308,8 +308,8 @@ fn multi_operation_engine_rejection_is_all_or_nothing() {
     assert_eq!(executor.command_executor().committed_operation_count(), 0);
 }
 
-#[test]
-fn observer_publication_order_accepted() {
+#[tokio::test]
+async fn observer_publication_order_accepted() {
     let recording =
         std::sync::Arc::new(RecordingChannel::<CounterOperation, CounterCommandEffect>::new());
     let observers = ObserverSet::new(ArcChannel(recording.clone()));
@@ -322,7 +322,7 @@ fn observer_publication_order_accepted() {
         .build()
         .expect("non-empty request builds");
 
-    let reply = executor.execute(request);
+    let reply = executor.execute(request).await;
     assert!(matches!(reply, Reply::Accepted { .. }));
 
     let events = recording.events();
@@ -354,8 +354,8 @@ fn observer_publication_order_accepted() {
     );
 }
 
-#[test]
-fn observer_receives_operations_even_on_lowering_rejection() {
+#[tokio::test]
+async fn observer_receives_operations_even_on_lowering_rejection() {
     let recording =
         std::sync::Arc::new(RecordingChannel::<CounterOperation, CounterCommandEffect>::new());
     let observers = ObserverSet::new(ArcChannel(recording.clone()));
@@ -368,7 +368,7 @@ fn observer_receives_operations_even_on_lowering_rejection() {
         .build()
         .expect("non-empty request builds");
 
-    let reply = executor.execute(request);
+    let reply = executor.execute(request).await;
     // Lowering rejection manifests as Reply::Accepted with operation-aborted
     // outcome, not as a kernel rejection.
     assert!(matches!(
@@ -392,8 +392,8 @@ fn observer_receives_operations_even_on_lowering_rejection() {
     );
 }
 
-#[test]
-fn reset_tracking_lowers_to_typed_command() {
+#[tokio::test]
+async fn reset_tracking_lowers_to_typed_command() {
     // ResetTracking is deliberately represented as a typed component-local
     // command. The executor should not need a special empty-lowering path.
     let mut executor = Executor::new(
@@ -403,7 +403,7 @@ fn reset_tracking_lowers_to_typed_command() {
     );
 
     let request = CounterOperation::ResetTracking.into_request();
-    let reply = executor.execute(request);
+    let reply = executor.execute(request).await;
 
     let Reply::Accepted {
         outcome,
@@ -421,8 +421,8 @@ fn reset_tracking_lowers_to_typed_command() {
     assert_eq!(executor.command_executor().committed_operation_count(), 1);
 }
 
-#[test]
-fn engine_rejection_does_not_carry_contract_reply() {
+#[tokio::test]
+async fn engine_rejection_does_not_carry_contract_reply() {
     // Engine rejection produces a batch-aborted reply with no typed contract
     // detail -- the typed engine cause stays daemon-side, not on the wire.
     let mut executor = Executor::new(
@@ -432,7 +432,7 @@ fn engine_rejection_does_not_carry_contract_reply() {
     );
 
     let request = CounterOperation::Increment(2).into_request();
-    let reply = executor.execute(request);
+    let reply = executor.execute(request).await;
 
     match reply {
         Reply::Accepted {

@@ -53,7 +53,7 @@ where
         self.last_engine_error.take()
     }
 
-    pub fn execute(&mut self, request: Request<L::Operation>) -> Reply<L::Reply> {
+    pub async fn execute(&mut self, request: Request<L::Operation>) -> Reply<L::Reply> {
         let total_operations = request.payloads().len();
         let mut operation_plans = Vec::with_capacity(total_operations);
 
@@ -75,7 +75,7 @@ where
             NonEmpty::try_from_vec(operation_plans).expect("requests are statically non-empty"),
         );
 
-        let batch_effects = match self.command_executor.execute_atomic_batch(plan) {
+        let batch_effects = match self.command_executor.execute_atomic_batch(plan).await {
             Ok(effects) => effects,
             Err(error) => {
                 let reason = error.batch_failure_reason();

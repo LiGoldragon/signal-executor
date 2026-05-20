@@ -136,8 +136,8 @@ impl ObserverDelivery for RecordingDelivery {
     }
 }
 
-#[test]
-fn frame_observer_bridge_delivers_projected_events_in_order() {
+#[tokio::test]
+async fn frame_observer_bridge_delivers_projected_events_in_order() {
     let observer_set = CounterObserverSet::new();
     let token = observer_set.register(CounterObserverFilter::All);
     let delivered: Arc<Mutex<Vec<DeliveredEvent>>> = Arc::new(Mutex::new(Vec::new()));
@@ -151,7 +151,7 @@ fn frame_observer_bridge_delivers_projected_events_in_order() {
     let mut executor = Executor::new(CounterLowering::new(), CounterEngine::new(), observers);
 
     let request = CounterOperation::Increment(3).into_request();
-    let reply = executor.execute(request);
+    let reply = executor.execute(request).await;
     assert!(matches!(reply, Reply::Accepted { .. }));
 
     let events = delivered.lock().unwrap().clone();

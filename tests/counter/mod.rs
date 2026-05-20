@@ -206,7 +206,7 @@ impl CommandExecutor for CounterEngine {
     type Command = CounterCommand;
     type ComponentEffect = CounterEffectOutcome;
     type Error = CounterEngineFailure;
-    fn execute_atomic_batch(
+    async fn execute_atomic_batch(
         &mut self,
         plan: BatchPlan<Self::Command>,
     ) -> Result<BatchEffects<Self::Command, Self::ComponentEffect>, Self::Error> {

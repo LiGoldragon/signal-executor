@@ -73,7 +73,7 @@ Lowering::lower(operation) -> OperationPlan<Command>
   |
   | all source operations lower successfully
   v
-CommandExecutor::execute_atomic_batch(BatchPlan<Command>)
+CommandExecutor::execute_atomic_batch(BatchPlan<Command>).await
   |
   | committed
   v
@@ -96,7 +96,10 @@ That grouping is why the executor does not need a sidecar
 ## Atomicity
 
 `CommandExecutor::execute_atomic_batch` is the only state-changing
-call the executor makes. It receives a `BatchPlan<Command>` and
+call the executor makes. It is asynchronous because real Persona
+components execute commands through Kameo actors and socket/state
+owners; a synchronous executor boundary would force component pilots
+to bypass the actor mesh. It receives a `BatchPlan<Command>` and
 returns either:
 
 - `Ok(BatchEffects<Command, ComponentEffect>)`: every command

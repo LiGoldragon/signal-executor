@@ -2,6 +2,7 @@
 
 use crate::lowering::{BatchEffects, BatchPlan};
 use signal_frame::BatchErrorClassification;
+use std::future::Future;
 
 pub trait CommandExecutor {
     type Command;
@@ -10,5 +11,8 @@ pub trait CommandExecutor {
     fn execute_atomic_batch(
         &mut self,
         plan: BatchPlan<Self::Command>,
-    ) -> Result<BatchEffects<Self::Command, Self::ComponentEffect>, Self::Error>;
+    ) -> impl Future<
+        Output = Result<BatchEffects<Self::Command, Self::ComponentEffect>, Self::Error>,
+    > + Send
+    + '_;
 }
