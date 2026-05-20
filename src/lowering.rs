@@ -159,6 +159,15 @@ pub trait Lowering {
         operation: &Self::Operation,
     ) -> Result<OperationPlan<Self::Command>, Self::Reply>;
 
+    /// Build the contract reply for one source operation from the
+    /// effects produced by that operation's command plan.
+    ///
+    /// `effects` preserves the command order from the corresponding
+    /// `OperationPlan`. The lowering implementation owns the canonical
+    /// reply rule for its component: it may select a specific effect,
+    /// aggregate several effects, or use the pipeline convention that the
+    /// final command effect is canonical. The shared executor deliberately
+    /// does not infer this from the command list.
     fn reply_from_effects(
         &self,
         operation: &Self::Operation,

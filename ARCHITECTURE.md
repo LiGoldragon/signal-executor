@@ -97,6 +97,13 @@ the commands remain grouped under the operation that produced them.
 That grouping is why the executor does not need a sidecar
 `source_index`.
 
+`Lowering::reply_from_effects` is deliberately component-owned. It
+receives the effects for one source operation in command order and
+decides the canonical contract reply for that operation. A component
+may aggregate several effects, select a named effect, or document the
+pipeline-order convention that the last command effect is canonical;
+the shared executor never guesses.
+
 ## Atomicity
 
 `CommandExecutor::execute_atomic_batch` is the only state-changing

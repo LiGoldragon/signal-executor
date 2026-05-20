@@ -14,8 +14,10 @@ This repository follows the workspace skills in
 - Do not introduce component-domain names. Every contract-level
   vocabulary is supplied by the daemon's `Lowering` impl.
 - Reply mapping flows through `Lowering::reply_from_effects` --
-  per-operation, positional, deterministic. Do not invent a
-  channel-side reply assembler.
+  per-operation, positional, deterministic. The lowering owns the
+  canonical reply rule for multi-command operation plans; document
+  whether it selects, aggregates, or treats the last command effect as
+  canonical. Do not invent a channel-side reply assembler.
 - Observer publication is best-effort and post-commit: failures
   in publication never roll back state effects. Document each
   publication's ordering with a test.
