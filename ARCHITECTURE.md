@@ -105,7 +105,7 @@ flowchart TD
 
 | Path | When | Wire `Reply` | Daemon-side carry |
 |---|---|---|---|
-| `Accepted` | Every operation lowered and the engine committed atomically. | `Reply::Accepted { outcome: Completed, per_operation: NonEmpty<SubReply::Ok { payload }> }`. | `effects: Vec<SemaEffect>` for post-execution use (logs, metrics, derived events). |
+| `Accepted` | Every operation lowered and the engine committed atomically. | `Reply::Accepted { outcome: Committed, per_operation: NonEmpty<SubReply::Ok(payload)> }`. | `effects: Vec<SemaEffect>` for post-execution use (logs, metrics, derived events). |
 | `LoweringRejected` | A `Lowering::lower` call returned `Err(contract_reply)`. The engine was not called; no state effect occurred. | `Reply::Accepted { outcome: Aborted { failed_at, reason: DomainRejection }, per_operation: NonEmpty<Invalidated / Failed { detail: Some(contract_reply) } / Skipped> }`. | Contract-domain rejection rides in the failed operation's typed reply detail. |
 | `EngineRejected` | `SemaEngine::execute_atomic` returned `Err`. No state effect committed (atomicity contract). | `Reply::Rejected { reason: RequestRejectionReason::Internal }`. | `error: S::Error` -- the engine's typed failure cause. |
 

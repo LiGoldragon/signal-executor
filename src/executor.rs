@@ -169,20 +169,13 @@ where
         let head_reply = self.lowering.reply_from_effects(&head_operation, &effects);
         let tail_replies: Vec<SubReply<LoweringImpl::Reply>> = tail_operations
             .iter()
-            .map(|operation| SubReply::Ok {
-                payload: self.lowering.reply_from_effects(operation, &effects),
-            })
+            .map(|operation| SubReply::Ok(self.lowering.reply_from_effects(operation, &effects)))
             .collect();
-        let per_operation = NonEmpty::from_head_and_tail(
-            SubReply::Ok {
-                payload: head_reply,
-            },
-            tail_replies,
-        );
+        let per_operation = NonEmpty::from_head_and_tail(SubReply::Ok(head_reply), tail_replies);
 
         ExecutorOutcome::Accepted {
             reply: Reply::Accepted {
-                outcome: AcceptedOutcome::Completed,
+                outcome: AcceptedOutcome::Committed,
                 per_operation,
             },
             effects,

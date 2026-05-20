@@ -55,10 +55,10 @@ fn single_increment_round_trip() {
     else {
         panic!("expected Reply::Accepted");
     };
-    assert_eq!(outcome, AcceptedOutcome::Completed);
+    assert_eq!(outcome, AcceptedOutcome::Committed);
     assert_eq!(per_operation.len(), 1);
 
-    let SubReply::Ok { payload } = per_operation.head() else {
+    let SubReply::Ok(payload) = per_operation.head() else {
         panic!("expected SubReply::Ok");
     };
     let CounterReply::Incremented { rows_written } = payload else {
@@ -102,22 +102,22 @@ fn multi_operation_round_trip_correlates_replies() {
     else {
         panic!("expected Reply::Accepted");
     };
-    assert_eq!(outcome, AcceptedOutcome::Completed);
+    assert_eq!(outcome, AcceptedOutcome::Committed);
     assert_eq!(per_operation.len(), 3);
 
     let mut payloads = per_operation.iter();
 
-    let SubReply::Ok { payload } = payloads.next().expect("head") else {
+    let SubReply::Ok(payload) = payloads.next().expect("head") else {
         panic!("expected SubReply::Ok at index 0");
     };
     assert!(matches!(payload, CounterReply::Incremented { .. }));
 
-    let SubReply::Ok { payload } = payloads.next().expect("tail[0]") else {
+    let SubReply::Ok(payload) = payloads.next().expect("tail[0]") else {
         panic!("expected SubReply::Ok at index 1");
     };
     assert!(matches!(payload, CounterReply::Queried { .. }));
 
-    let SubReply::Ok { payload } = payloads.next().expect("tail[1]") else {
+    let SubReply::Ok(payload) = payloads.next().expect("tail[1]") else {
         panic!("expected SubReply::Ok at index 2");
     };
     assert!(matches!(payload, CounterReply::Decremented { .. }));
@@ -379,7 +379,7 @@ fn empty_lowering_is_legal() {
         panic!("expected Reply::Accepted");
     };
     assert_eq!(per_operation.len(), 1);
-    let SubReply::Ok { payload } = per_operation.head() else {
+    let SubReply::Ok(payload) = per_operation.head() else {
         panic!("expected SubReply::Ok");
     };
     assert!(matches!(payload, CounterReply::TrackingReset));
