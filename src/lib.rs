@@ -18,7 +18,8 @@
 //!
 //! Per /246 §3: the [`FrameObserverBridge`] composes three pieces
 //! (`ObservationProjection` + `ObservableSet` +
-//! [`ObserverDelivery`]) into an [`ObserverChannel<Operation, Effect>`]
+//! [`ObserverDelivery`]) into an
+//! [`ObserverChannel<Operation, CommandEffect<Command, ComponentEffect>>`]
 //! that the executor publishes through. The traits live in
 //! signal-frame so signal-frame's macro can emit the per-channel
 //! impls without depending on signal-executor; this crate composes
@@ -28,7 +29,6 @@
 //! taxonomy, reply correlation, and observer publication ordering.
 
 pub mod bridge;
-pub mod effect;
 pub mod engine;
 pub mod error;
 pub mod executor;
@@ -36,17 +36,13 @@ pub mod lowering;
 pub mod observer;
 
 pub use bridge::{FrameObserverBridge, ObserverDelivery};
-pub use effect::{SemaEffect, SemaEffectOutcome};
 pub use engine::CommandExecutor;
 pub use error::Error;
 pub use executor::Executor;
-pub use lowering::{BatchEffects, BatchPlan, Lowering, OperationEffects, OperationPlan};
+pub use lowering::{
+    BatchEffects, BatchPlan, CommandEffect, Lowering, OperationEffects, OperationPlan,
+};
 pub use observer::{ObserverChannel, ObserverSet, RecordedEvent, RecordingChannel};
-
-#[deprecated(
-    note = "use CommandExecutor; Sema is now classification, not executable command shape"
-)]
-pub use engine::CommandExecutor as SemaEngine;
 
 // Re-export the projection/observable-set traits for daemon convenience.
 pub use signal_frame::{ObservableSet, ObservationProjection};

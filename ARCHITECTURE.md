@@ -1,22 +1,21 @@
 ## signal-executor Architecture
 
-`signal-executor` owns the shared library a triad daemon uses to
-translate its public contract operations into executable Sema commands,
-commit them atomically through a `SemaEngine`, correlate each
-Sema effect back to a per-operation reply, and publish operation /
-effect events to subscribed observers.
+`signal-executor` is the shared library a component daemon uses to
+execute one `signal-frame::Request<Operation>` without making the
+wire contract, local database code, and observer machinery leak into
+each other.
 
-It is below the daemon and above `signal-sema`. The daemon supplies
-two impls: a `Lowering` over its contract operation enum, and a
-`SemaEngine` over its concrete database backend. The executor
-composes those two impls into a uniform `execute(Request) ->
-ExecutorOutcome` pipeline.
+The current design is the three-layer model:
 
-Public contracts speak contract-local verbs. Lowering is the daemon's
-boundary from that public vocabulary into commands its Sema engine can
-execute. `signal-sema::SemaOperation` remains the shared operation
-class vocabulary for effects and observation; it is not the executable
-command shape.
+```text
+contract Operation  ->  component Command  ->  Sema observation class
+external vocabulary     executable payload      payloadless classification
+```
+
+The executor never executes `SemaOperation`. `SemaOperation` and
+`SemaOutcome` are payloadless observation classifications from
+`signal-sema`. Execution is component-local: each daemon defines its
+own `Command` and `ComponentEffect` records.
 
 ## Constraints
 
@@ -24,244 +23,206 @@ command shape.
 - `signal-executor` contains no daemon, actor, socket, redb, or
   runtime code.
 - `signal-executor` contains no Persona-specific, Criome-specific,
-  or component-specific payload records. Every contract-level
-  vocabulary is supplied by the daemon's `Lowering` impl.
-- `signal-executor` depends on `signal-frame` (for `Request`,
-  `Reply`, `SubReply`, `AcceptedOutcome`, `NonEmpty`,
-  `RequestRejectionReason`, `RequestPayload`) and on `signal-sema`
-  (for `SemaOperation` effect classification). It does not depend on
-  `sema-engine` the engine; daemons reach their actual engine through
-  the `SemaEngine` trait this crate defines.
-- The crate is synchronous. Daemons that drive the executor wire it
-  into whatever async runtime they already use.
-- Public types and methods carry typed errors via `thiserror` per
-  `~/primary/skills/rust/errors.md`.
-- Type names inside the crate do not restate the `Executor` or
-  `Signal` namespace; the domain is implicit.
+  or component-specific payload records.
+- `signal-executor` depends on `signal-frame` for request/reply,
+  non-empty batch, observer, and macro-adjacent types.
+- `signal-executor` depends on `signal-sema` only for payloadless
+  classification traits and records: `ToSemaOperation`,
+  `ToSemaOutcome`, and `SemaObservation`.
+- `signal-executor` does not depend on `sema-engine`.
+- `signal-executor` does not own `SemaOperation` payloads.
+- `signal-executor` does not expose a `SemaEffect` type.
+- Engine failures are represented on the wire as an accepted
+  batch-abort reply, not as `Reply::Rejected`.
+- The typed engine error is retained daemon-side through
+  `Executor::take_last_engine_error`.
+- Observer publication never rolls back committed state.
 
-## Public surface
+## Public Surface
 
-| Item | Shape | Use |
+| Item | Shape | Purpose |
 |---|---|---|
-| `Lowering` | trait | per-daemon contract-to-command bridge; three associated types (`Operation`, `Reply`, `Command`) and two methods (`lower`, `reply_from_effects`). |
-| `SemaEngine` | trait | atomic commit point with two associated types (`Command`, `Error`) and one method (`execute_atomic`). |
-| `Executor<L, S>` | struct | composes `L: Lowering` and `S: SemaEngine` over a shared `ObserverSet`; exposes `execute(Request<L::Operation>) -> ExecutorOutcome<L, S>`. |
-| `ExecutorOutcome<L, S>` | enum | three terminal variants: `Accepted { reply, effects }`, `LoweringRejected { reply, failed_at }`, `EngineRejected { reply, error }`. Borrow `reply()` for the wire shape; `is_accepted()` / `is_rejected()` for branching. |
-| `SemaEffect` | struct | what happened after an executable command committed: broad `operation: SemaOperation` plus `outcome: SemaEffectOutcome`. |
-| `SemaEffectOutcome` | enum | closed variant set keyed off operation class: `Wrote { rows_written, rows_matched }`, `Read { rows_read }`, `Stream { subscription_token }`, `Validated { predicate_held }`. |
-| `ObserverChannel<Operation>` | trait | per-channel publish surface the executor calls. Two methods: `publish_operation_received(&Operation)` and `publish_sema_effect_emitted(&SemaEffect)`. |
-| `ObserverSet<Operation>` | struct | concrete observer bookkeeping wrapping an `ObserverChannel` in `Arc`; clones share the underlying channel. `ObserverSet::no_op()` for daemons that have not yet wired observation. |
-| `RecordingChannel<Operation>` | struct | test-only `ObserverChannel` impl recording events into an internal log for assertion. |
-| `RecordedEvent<Operation>` | enum | `OperationReceived(Operation)` / `SemaEffectEmitted(SemaEffect)`. |
-| `Error` | enum | crate-boundary structural errors (currently one variant, `EmptyRequest`; reserved for input shape checks). |
+| `Lowering` | trait | Daemon-owned bridge from public contract `Operation` to local executable `Command`, and from committed `OperationEffects` to contract `Reply`. |
+| `OperationPlan<Command>` | struct | Non-empty command plan for one source operation. |
+| `BatchPlan<Command>` | struct | Non-empty batch of operation plans; preserves source-operation grouping. |
+| `CommandExecutor` | trait | Component-local atomic commit point over `BatchPlan<Command>`. |
+| `CommandEffect<Command, ComponentEffect>` | struct | One executed local command plus the local effect it produced. |
+| `OperationEffects<Command, ComponentEffect>` | struct | Non-empty command effects for one source operation. |
+| `BatchEffects<Command, ComponentEffect>` | struct | Non-empty operation effects for the whole request. |
+| `Executor<Lowering, CommandExecutor>` | struct | Executes a frame request by composing lowering, atomic command execution, reply correlation, and observation. |
+| `ObserverChannel<Operation, Effect>` | trait | Executor-facing publication surface. In normal use `Effect` is `CommandEffect<Command, ComponentEffect>`. |
+| `ObserverSet<Operation, Effect>` | struct | Shared observer handle used by the executor. |
+| `FrameObserverBridge` | struct | Connects raw executor facts to macro-generated observable streams through `ObservationProjection`. |
 
-## Atomicity contract
+There is intentionally no `SemaEngine` alias. The old name made Sema
+sound executable. The executable surface is `CommandExecutor`.
 
-`SemaEngine::execute_atomic` is the **single binding point** for
-state effects. The trait guarantees:
+## Execution Flow
 
-- either every command in the input `Vec<Self::Command>` commits,
-  in which case the engine returns one `SemaEffect` per command
-  in request order, or
-- no operation commits, and the engine returns `Err(Self::Error)`.
-
-There is no partial-commit return shape. Daemons that need
-partial-commit semantics split the work across separate
-`Executor::execute` calls -- atomicity is structural per call.
-
-The executor does not retry, does not rollback, does not compensate.
-It is the engine's job to enforce all-or-nothing. The executor's
-contribution is structural: by funnelling every operation through
-one `execute_atomic` call, it makes "all" or "none" the only two
-states the caller sees.
-
-When `execute_atomic` returns `Err`, the wire `Reply` is
-`Reply::Rejected { reason: RequestRejectionReason::Internal }`. The
-engine's typed error is carried separately on the daemon side via
-`ExecutorOutcome::EngineRejected { error, .. }`.
-
-## Failure-mode taxonomy
-
-Three terminal paths, one terminal variant per path:
-
-```mermaid
-flowchart TD
-    request["Request&lt;L::Operation&gt;"]
-    lower["lower() for each op"]
-    engine["execute_atomic(commands)"]
-    map["reply_from_effects() for each op"]
-
-    accepted["ExecutorOutcome::Accepted<br/>{ reply, effects }"]
-    lrej["ExecutorOutcome::LoweringRejected<br/>{ reply, failed_at }"]
-    erej["ExecutorOutcome::EngineRejected<br/>{ reply, error }"]
-
-    request --> lower
-    lower -- Ok --> engine
-    lower -- Err --> lrej
-    engine -- Ok --> map
-    engine -- Err --> erej
-    map --> accepted
+```text
+Request<Operation>
+  |
+  | publish OperationReceived for every operation
+  v
+Lowering::lower(operation) -> OperationPlan<Command>
+  |
+  | all source operations lower successfully
+  v
+CommandExecutor::execute_atomic_batch(BatchPlan<Command>)
+  |
+  | committed
+  v
+BatchEffects<Command, ComponentEffect>
+  |
+  | publish CommandEffect events in commit order
+  v
+Lowering::reply_from_effects(operation, effects)
+  |
+  v
+Reply<ContractReply>
 ```
 
-| Path | When | Wire `Reply` | Daemon-side carry |
+`OperationPlan<Command>` is the source-operation boundary. A single
+contract operation may lower to many component-local commands, but
+the commands remain grouped under the operation that produced them.
+That grouping is why the executor does not need a sidecar
+`source_index`.
+
+## Atomicity
+
+`CommandExecutor::execute_atomic_batch` is the only state-changing
+call the executor makes. It receives a `BatchPlan<Command>` and
+returns either:
+
+- `Ok(BatchEffects<Command, ComponentEffect>)`: every command
+  committed, and the result still preserves source-operation
+  grouping; or
+- `Err(Error)`: no command committed.
+
+The executor does not retry, compensate, or roll back. The component
+executor is responsible for all-or-nothing behavior. The shared
+executor makes that contract visible by having no partial-commit
+return shape.
+
+## Failure Modes
+
+| Path | When | Wire reply | Side channel |
 |---|---|---|---|
-| `Accepted` | Every operation lowered and the engine committed atomically. | `Reply::Accepted { outcome: Completed, per_operation: NonEmpty<SubReply::Ok { payload }> }`. | `effects: Vec<SemaEffect>` for post-execution use (logs, metrics, derived events). |
-| `LoweringRejected` | A `Lowering::lower` call returned `Err(reply)`. The engine was not called; no state effect occurred. | `Reply::Accepted { outcome: Aborted { failed_at, reason: DomainRejection }, per_operation: ... }`; earlier operations are `Invalidated`, the failed operation carries `SubReply::Failed { detail: Some(reply) }`, later operations are `Skipped`. | `failed_at` -- the index of the domain-rejected operation. |
-| `EngineRejected` | `SemaEngine::execute_atomic` returned `Err`. No state effect committed (atomicity contract). | `Reply::Rejected { reason: RequestRejectionReason::Internal }`. | `error: S::Error` -- the engine's typed failure cause. |
+| Committed | Every operation lowered and the command executor committed atomically. | `Reply::Accepted { outcome: Committed, per_operation: Ok(...) }` | Observer events are published after commit. |
+| Domain rejection | `Lowering::lower` rejected one source operation. | `Reply::Accepted { outcome: OperationAborted { failed_at, reason: DomainRejection }, ... }` | No command executor call; no effect events. |
+| Engine rejection | `CommandExecutor::execute_atomic_batch` returned `Err`. | `Reply::Accepted { outcome: BatchAborted { reason: EngineRejected, commit: NotCommitted, ... }, per_operation: Invalidated... }` | Typed engine error is stored in `Executor::take_last_engine_error`. |
 
-Post-commit publication failures (the observer set's
-`publish_*` methods) do **not** roll back state. By the time the
-executor reaches the publication step, the engine has already
-committed. A panicking observer is a daemon-side bug; the wire
-reply is unaffected.
+`Reply::Rejected` remains a kernel/frame rejection shape. It is not
+used for component executor failure because the frame was accepted and
+the failure happened after execution planning began.
 
-## Reply correlation
+## Observation
 
-`Lowering::reply_from_effects` is called once per operation, in
-request order, with the full effects slice. The impl is responsible
-for selecting which effects correspond to which operation -- typically
-by counting forward through the slice in the order `lower` produced
-operations.
+The executor publishes two moments:
 
-The executor preserves request order:
-
-1. The input `Request<L::Operation>` carries `NonEmpty<L::Operation>`.
-   The executor iterates `payloads()` in request order to call
-   `lower` and `reply_from_effects` -- never re-orders.
-2. The output `Reply::Accepted` carries
-   `NonEmpty<SubReply<L::Reply>>`. The executor builds it from the
-   `(head_op, tail_ops)` split of the input non-empty, preserving
-   non-emptiness without re-checking shape.
-
-A `Lowering` impl that produces an empty `Vec` for one operation
-(legitimate for validation-only or no-op operations) still
-participates in `reply_from_effects` -- it just consults the
-effects slice without claiming any of it.
-
-## Observer publication ordering
-
-The executor publishes in fixed order:
-
-1. **OperationReceived** fires for every payload in the request,
-   in request order, **before** any `lower` call.
-2. **SemaEffectEmitted** fires for every effect, in commit order,
-   **after** the engine returns successfully.
-
-This is a hard ordering. Tests in `tests/round_trip.rs` witness it
-via a `RecordingChannel`.
-
-On lowering rejection, every operation up to (and including) the
-rejecting one is observed under `OperationReceived`, but no
-`SemaEffectEmitted` fires because no effect was committed.
-
-On engine rejection, every operation is observed, but again no
-`SemaEffectEmitted` fires because no effect was committed.
-
-```mermaid
-flowchart LR
-    op1["OperationReceived(op_1)"]
-    op2["OperationReceived(op_2)"]
-    opN["OperationReceived(op_N)"]
-    e1["SemaEffectEmitted(effect_1)"]
-    eM["SemaEffectEmitted(effect_M)"]
-
-    op1 --> op2 --> opN --> e1 --> eM
+```text
+OperationReceived(operation)          before lowering
+EffectEmitted(command_effect)         after atomic commit
 ```
 
-Where:
-- N is the number of operations in the request.
-- M is the number of effects the engine emitted (commit order).
-- N and M may differ -- one operation may lower to many Sema
-  operations, or to zero.
-
-## Macro coordination
-
-A parallel work-stream extends `signal-frame`'s `signal_channel!`
-macro with an `observable` block that injects publish surfaces and
-a subscription stream on the channel. When that work lands, the
-macro will emit per-channel functions roughly shaped like:
+The effect is not a Sema effect. It is the component-local pair:
 
 ```rust
-fn publish_operation_received(&self, operation: &ChannelOperation);
-fn publish_sema_effect_emitted(&self, effect: &SemaEffect);
+CommandEffect<Command, ComponentEffect>
 ```
 
-`signal-executor`'s `ObserverChannel<Operation>` trait is designed
-so that daemons can adapt the macro's emitted functions to the
-trait by writing a thin newtype adapter (one trait impl per
-channel). The exact shape of the macro's emitted code will be
-reconciled in a follow-up once the macro work lands; today's
-`ObserverChannel` trait is the executor-facing half of that
-boundary.
+Generic observers that need the workspace-wide classification call:
 
-## Boundary
-
-```mermaid
-flowchart TB
-    daemon["component daemon"]
-    contract["public component contract"]
-    executor["signal-executor<br/>Lowering + SemaEngine + Executor"]
-    sema["signal-sema<br/>SemaOperation"]
-    engine["sema-engine<br/>registered record execution"]
-
-    daemon -- "operates on" --> executor
-    daemon -- "supplies impl" --> executor
-    contract -- "defines vocabulary" --> daemon
-    executor --> sema
-    daemon --> engine
-    engine -- "is reached through" --> executor
+```rust
+command_effect.sema_observation()
 ```
 
-`signal-executor` does not see `sema-engine` directly; the daemon
-implements `SemaEngine` over its concrete engine instance and
-hands the impl to the executor.
+That method is available when:
 
-## Non-goals
+```rust
+Command: ToSemaOperation
+ComponentEffect: ToSemaOutcome
+```
+
+The result is:
+
+```rust
+SemaObservation {
+    operation: SemaOperation,
+    outcome: SemaOutcome,
+}
+```
+
+The daemon can still publish richer component-specific event records
+through `FrameObserverBridge` and `ObservationProjection`.
+
+## Observer Bridge
+
+The crate boundary is intentionally split:
+
+```text
+signal-executor
+  raw facts:
+    Operation
+    CommandEffect<Command, ComponentEffect>
+
+signal-frame macro output
+  observable stream:
+    OperationEvent
+    EffectEvent
+
+daemon projection
+  ObservationProjection:
+    Operation -> OperationEvent
+    CommandEffect<Command, ComponentEffect> -> EffectEvent
+```
+
+`FrameObserverBridge` composes:
+
+- an `ObservationProjection`,
+- a macro-generated or daemon-owned `ObservableSet`, and
+- an `ObserverDelivery` callback that writes projected events to
+  subscribers.
+
+This avoids a dependency inversion. `signal-frame` never depends on
+`signal-executor`, and `signal-executor` never knows a component's
+stream records.
+
+## Non-Goals
 
 - No public component operation vocabulary.
-- No request/reply frame mechanics (those live in `signal-frame`).
-- No Sema operation vocabulary or pattern primitives (those live
-  in `signal-sema`).
-- No `sema-engine` integration. Daemons bridge their engine into
-  the `SemaEngine` trait themselves.
-- No authentication, routing, or daemon-side policy.
-- No async runtime, actor supervision, socket plumbing, or redb
-  table management.
-- No retry, backoff, or compensation logic. Atomicity is the
-  engine's contract; the executor is the structural binding point.
+- No request/reply codec or socket protocol.
+- No daemon lifecycle or actor supervision.
+- No redb or Sema table execution.
+- No authentication, routing, or policy.
+- No retry or backoff strategy.
+- No global executable database-command language.
 
-## Code map
+## Code Map
 
 ```text
 src/lib.rs       module entry and re-exports
-src/effect.rs    SemaEffect and SemaEffectOutcome with witness predicate
-src/engine.rs    SemaEngine trait (associated Command + Error types,
-                 execute_atomic)
-src/error.rs     crate-boundary Error enum (reserved input-shape variants)
-src/executor.rs  Executor struct and ExecutorOutcome enum
-src/lowering.rs  Lowering trait (Operation, Reply, Command)
-src/observer.rs  ObserverChannel trait, ObserverSet struct,
-                 RecordingChannel + RecordedEvent for tests
+src/engine.rs    CommandExecutor trait
+src/error.rs     crate-boundary Error enum
+src/executor.rs  Executor and failure mapping
+src/lowering.rs  Lowering, OperationPlan, BatchPlan,
+                 CommandEffect, OperationEffects, BatchEffects
+src/observer.rs  ObserverChannel, ObserverSet, RecordingChannel,
+                 RecordedEvent
+src/bridge.rs    FrameObserverBridge and ObserverDelivery
 
-tests/counter/mod.rs  Counter mock: operation/reply/command enums,
-                      Lowering impl, SemaEngine impl (typed commands,
-                      canned effects, plus poisoned variant for
-                      engine-rejection tests)
-tests/effect.rs       Unit tests for SemaEffect::is_write_commit
-                      across all operation classes and outcomes
-tests/observer.rs     Unit tests for ObserverSet, RecordingChannel,
-                      RecordedEvent ordering, and Arc-shared channels
-tests/round_trip.rs   End-to-end tests: single-op accepted, multi-op
-                      accepted, lowering rejection (engine never
-                      called), engine rejection (no state visible),
-                      observer publication ordering, empty-lowering,
-                      ExecutorOutcome::reply accessor
+tests/counter/mod.rs       Counter mock with operation, command,
+                           effect, reply, lowering, and executor impls
+tests/command_effect.rs    CommandEffect projection witnesses
+tests/observer.rs          ObserverSet and RecordingChannel witnesses
+tests/bridge_integration.rs FrameObserverBridge projection witness
+tests/round_trip.rs        End-to-end acceptance, rejection, atomicity,
+                           and observer-ordering witnesses
 ```
 
-## See also
+## See Also
 
 - `/git/github.com/LiGoldragon/signal-frame/ARCHITECTURE.md`
-  -- the frame mechanics this crate consumes (`Request`, `Reply`,
-  `NonEmpty`, `RequestPayload`).
+  for request/reply and observable stream mechanics.
 - `/git/github.com/LiGoldragon/signal-sema/ARCHITECTURE.md`
-  -- the Sema operation vocabulary this crate composes with.
+  for payloadless Sema classification.

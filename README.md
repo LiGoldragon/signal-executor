@@ -1,109 +1,144 @@
 ## signal-executor
 
-`Lowering` trait, `SemaEngine` trait, and `Executor<L, S>` struct.
-The shared library a triad daemon uses to translate its public
-contract operations into executable Sema commands, with atomicity,
-per-operation reply mapping, and observer publication.
+`signal-executor` is the shared library a component daemon uses to
+execute one `signal-frame::Request<Operation>` through the current
+three-layer design:
 
-Public contracts speak contract-local operations. `Lowering`
-translates those public operations into executable commands for that
-daemon's Sema engine. A command may project to a broad
-`SemaOperation` class for observation, but the command is the value
-that carries the table, record, predicate, revision, and other
-execution detail.
+```text
+contract Operation  ->  component Command  ->  Sema observation class
+external vocabulary     executable payload      payloadless classification
+```
+
+The executor does not execute `SemaOperation`. Execution is
+component-local through the daemon's own `Command` and
+`ComponentEffect` records. `signal-sema` supplies only the
+payloadless observation projection: `SemaOperation`, `SemaOutcome`,
+and `SemaObservation`.
 
 ## What this crate owns
 
-- `Lowering` -- per-daemon trait with three associated types
-  (`Operation`, `Reply`, `Command`) and two methods
-  (`lower`, `reply_from_effects`). The contract-to-Sema bridge.
-- `SemaEngine` -- atomic-commit trait with two associated types
-  (`Command`, `Error`) and one method (`execute_atomic`).
-- `Executor<L: Lowering, S: SemaEngine>` -- composes the two
-  traits over an `ObserverSet`; exposes `execute(Request) ->
-  ExecutorOutcome`.
-- `ExecutorOutcome` -- closed enum with three terminal variants
-  (`Accepted`, `LoweringRejected`, `EngineRejected`), each
-  carrying the wire `Reply` plus per-path daemon-side material.
-- `SemaEffect` + `SemaEffectOutcome` -- what happened after an
-  executable command committed; the effect cites the broad
-  `SemaOperation` class for observation.
-- `ObserverChannel` + `ObserverSet` + `RecordingChannel` +
-  `RecordedEvent` -- observer publication surfaces for the
-  introspection vocabulary.
+- `Lowering` -- per-daemon trait that maps a public contract
+  operation to an `OperationPlan<Command>` and maps committed
+  `OperationEffects` back to a contract reply.
+- `CommandExecutor` -- atomic commit trait over a
+  `BatchPlan<Command>`.
+- `Executor` -- composes lowering, atomic command execution, reply
+  correlation, and observation publication.
+- `CommandEffect<Command, ComponentEffect>` -- one executed command
+  paired with the component-local effect it produced.
+- `OperationEffects` and `BatchEffects` -- committed effects grouped
+  by their source operation.
+- `ObserverChannel`, `ObserverSet`, `RecordingChannel`, and
+  `RecordedEvent` -- executor-facing observer publication surfaces.
+- `FrameObserverBridge` -- bridge from raw executor facts to
+  macro-generated observable streams through `ObservationProjection`.
 
 ## What this crate does not own
 
-- Frame envelope, handshake, exchange identifiers, async correlation,
-  streams, reply plumbing -- those live in `signal-frame`.
-- Sema operation vocabulary and pattern primitives -- those live
-  in `signal-sema`.
-- The actual database engine. Daemons implement `SemaEngine` over
-  their own backend.
+- Frame envelope, codec, streams, reply plumbing, or the
+  `signal_channel!` macro output -- those live in `signal-frame`.
+- Sema operation/outcome classification -- that lives in
+  `signal-sema`.
+- Database execution -- daemons implement `CommandExecutor` over
+  their own storage engine.
 - Public component operation vocabulary, async runtime, sockets,
-  actor supervision, daemon-side policy.
+  actor supervision, authentication, routing, or policy.
 
 ## Atomicity contract
 
-`SemaEngine::execute_atomic` guarantees all-or-none commit. The
-executor binds every lowered command in one `execute_atomic` call so
-the caller sees only two states: every state effect happened, or
-none did.
+`CommandExecutor::execute_atomic_batch` guarantees all-or-none
+commit. It receives a grouped `BatchPlan<Command>` and returns either
+committed `BatchEffects<Command, ComponentEffect>` or an error.
 
 Domain rejection during lowering is not a frame/kernel rejection. It
-returns `Reply::Accepted { outcome: Aborted, per_operation: ... }`,
-with the domain reply carried in the failed operation's
-`SubReply::Failed.detail`.
+returns `Reply::Accepted` with an operation-aborted outcome and the
+typed domain reply carried in `SubReply::Failed.detail`.
 
-When the engine itself returns `Err`, the wire `Reply` is
-`Reply::Rejected { reason: RequestRejectionReason::Internal }` and
-the typed engine error is carried via
-`ExecutorOutcome::EngineRejected`.
+Engine rejection is also not a frame/kernel rejection. The wire reply
+is `Reply::Accepted` with a batch-aborted outcome, and the typed
+engine error stays daemon-side through
+`Executor::take_last_engine_error`.
 
-See `ARCHITECTURE.md` for the full failure-mode taxonomy, reply
-correlation contract, and observer publication ordering.
+## Observation
+
+Observers receive:
+
+```text
+OperationReceived(operation)          before lowering
+EffectEmitted(command_effect)         after atomic commit
+```
+
+`command_effect.sema_observation()` projects the local command/effect
+pair into:
+
+```rust
+SemaObservation {
+    operation: SemaOperation,
+    outcome: SemaOutcome,
+}
+```
+
+That projection is available when the local command implements
+`ToSemaOperation` and the local effect implements `ToSemaOutcome`.
 
 ## Usage shape
 
 ```rust,ignore
-use signal_executor::{Executor, ExecutorOutcome, Lowering, ObserverSet, SemaEngine};
+use signal_executor::{
+    BatchEffects, BatchPlan, CommandExecutor, Executor, Lowering,
+    OperationEffects, OperationPlan,
+};
 use signal_frame::Request;
 
-struct SpiritLowering { /* state */ }
+struct SpiritLowering;
 
 impl Lowering for SpiritLowering {
     type Operation = SpiritOperation;
     type Reply = SpiritReply;
     type Command = SpiritCommand;
+    type ComponentEffect = SpiritEffect;
 
-    fn lower(&self, op: &Self::Operation)
-        -> Result<Vec<Self::Command>, Self::Reply>
-    { /* ... */ }
-
-    fn reply_from_effects(&self, op: &Self::Operation, effects: &[SemaEffect])
-        -> Self::Reply
-    { /* ... */ }
-}
-
-struct SpiritEngine { /* ... */ }
-
-impl SemaEngine for SpiritEngine {
-    type Command = SpiritCommand;
-    type Error = SpiritEngineError;
-    fn execute_atomic(&mut self, commands: Vec<Self::Command>)
-        -> Result<Vec<SemaEffect>, Self::Error>
-    { /* ... */ }
-}
-
-fn handle(executor: &mut Executor<SpiritLowering, SpiritEngine>,
-          request: Request<SpiritOperation>) {
-    match executor.execute(request) {
-        ExecutorOutcome::Accepted { reply, .. } => send(reply),
-        ExecutorOutcome::LoweringRejected { reply, .. } => send(reply),
-        ExecutorOutcome::EngineRejected { reply, .. } => send(reply),
+    fn lower(
+        &self,
+        operation: &Self::Operation,
+    ) -> Result<OperationPlan<Self::Command>, Self::Reply> {
+        // Map public contract operation to local executable command.
+        todo!()
     }
+
+    fn reply_from_effects(
+        &self,
+        operation: &Self::Operation,
+        effects: &OperationEffects<Self::Command, Self::ComponentEffect>,
+    ) -> Self::Reply {
+        // Map committed local effects back to the contract reply.
+        todo!()
+    }
+}
+
+struct SpiritEngine;
+
+impl CommandExecutor for SpiritEngine {
+    type Command = SpiritCommand;
+    type ComponentEffect = SpiritEffect;
+    type Error = SpiritEngineError;
+
+    fn execute_atomic_batch(
+        &mut self,
+        plan: BatchPlan<Self::Command>,
+    ) -> Result<BatchEffects<Self::Command, Self::ComponentEffect>, Self::Error> {
+        // Commit every command or no command.
+        todo!()
+    }
+}
+
+fn handle(
+    executor: &mut Executor<SpiritLowering, SpiritEngine>,
+    request: Request<SpiritOperation>,
+) -> SpiritFrameReply {
+    executor.execute(request)
 }
 ```
 
-The Counter mock in `tests/counter/mod.rs` is a fuller worked
+The Counter mock in `tests/counter/mod.rs` is the fuller worked
 example.

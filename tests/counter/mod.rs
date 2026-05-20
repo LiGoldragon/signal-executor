@@ -2,10 +2,11 @@
 
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use signal_executor::{
-    BatchEffects, BatchPlan, CommandExecutor, Lowering, OperationEffects, OperationPlan,
+    BatchEffects, BatchPlan, CommandEffect, CommandExecutor, Lowering, OperationEffects,
+    OperationPlan,
 };
 use signal_frame::RequestPayload;
-use signal_sema::SemaOperation;
+use signal_sema::{SemaOperation, SemaOutcome, ToSemaOperation, ToSemaOutcome};
 use thiserror::Error;
 
 #[derive(Archive, RkyvSerialize, RkyvDeserialize, Debug, Clone, PartialEq, Eq)]
@@ -25,8 +26,8 @@ pub enum CounterCommand {
     ResetTracking,
 }
 
-impl CounterCommand {
-    pub fn sema_operation(&self) -> SemaOperation {
+impl ToSemaOperation for CounterCommand {
+    fn to_sema_operation(&self) -> SemaOperation {
         match self {
             Self::Increment { .. } => SemaOperation::Assert,
             Self::Decrement { .. } => SemaOperation::Retract,
@@ -37,35 +38,22 @@ impl CounterCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CounterEffect {
-    pub sema_operation: SemaOperation,
-    pub outcome: CounterEffectOutcome,
+pub enum CounterEffectOutcome {
+    IncrementApplied { rows_written: u64 },
+    DecrementApplied { rows_matched: u64 },
+    ReadCompleted { rows_read: u64 },
+    TrackingValidated { predicate_held: bool },
 }
 
-impl CounterEffect {
-    pub fn new(sema_operation: SemaOperation, outcome: CounterEffectOutcome) -> Self {
-        Self {
-            sema_operation,
-            outcome,
+impl ToSemaOutcome for CounterEffectOutcome {
+    fn to_sema_outcome(&self) -> SemaOutcome {
+        match self {
+            Self::IncrementApplied { .. } => SemaOutcome::Asserted,
+            Self::DecrementApplied { .. } => SemaOutcome::Retracted,
+            Self::ReadCompleted { .. } => SemaOutcome::Matched,
+            Self::TrackingValidated { .. } => SemaOutcome::Validated,
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CounterEffectOutcome {
-    Wrote {
-        rows_written: u64,
-        rows_matched: u64,
-    },
-    Read {
-        rows_read: u64,
-    },
-    Stream {
-        subscription_token: u64,
-    },
-    Validated {
-        predicate_held: bool,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -99,7 +87,7 @@ impl Lowering for CounterLowering {
     type Operation = CounterOperation;
     type Reply = CounterReply;
     type Command = CounterCommand;
-    type Effect = CounterEffect;
+    type ComponentEffect = CounterEffectOutcome;
 
     fn lower(
         &self,
@@ -133,58 +121,48 @@ impl Lowering for CounterLowering {
     fn reply_from_effects(
         &self,
         operation: &Self::Operation,
-        effects: &[Self::Effect],
+        effects: &OperationEffects<Self::Command, Self::ComponentEffect>,
     ) -> Self::Reply {
         match operation {
             CounterOperation::Increment(_) => CounterReply::Incremented {
-                rows_written: first_wrote_for(effects, SemaOperation::Assert),
+                rows_written: first_increment_rows(effects),
             },
             CounterOperation::Decrement(_) => CounterReply::Decremented {
-                rows_matched: first_matched_for(effects, SemaOperation::Retract),
+                rows_matched: first_decrement_rows(effects),
             },
             CounterOperation::Query => CounterReply::Queried {
-                rows_read: first_read_for(effects, SemaOperation::Match),
+                rows_read: first_read_rows(effects),
             },
             CounterOperation::ResetTracking => CounterReply::TrackingReset,
         }
     }
 }
 
-fn first_wrote_for(effects: &[CounterEffect], wanted: SemaOperation) -> u64 {
+fn first_increment_rows(effects: &OperationEffects<CounterCommand, CounterEffectOutcome>) -> u64 {
     effects
-        .iter()
-        .find_map(|effect| match (effect.sema_operation, &effect.outcome) {
-            (sema_operation, CounterEffectOutcome::Wrote { rows_written, .. })
-                if sema_operation == wanted =>
-            {
-                Some(*rows_written)
-            }
+        .component_effects()
+        .find_map(|effect| match effect {
+            CounterEffectOutcome::IncrementApplied { rows_written } => Some(*rows_written),
             _ => None,
         })
         .unwrap_or(0)
 }
-fn first_matched_for(effects: &[CounterEffect], wanted: SemaOperation) -> u64 {
+
+fn first_decrement_rows(effects: &OperationEffects<CounterCommand, CounterEffectOutcome>) -> u64 {
     effects
-        .iter()
-        .find_map(|effect| match (effect.sema_operation, &effect.outcome) {
-            (sema_operation, CounterEffectOutcome::Wrote { rows_matched, .. })
-                if sema_operation == wanted =>
-            {
-                Some(*rows_matched)
-            }
+        .component_effects()
+        .find_map(|effect| match effect {
+            CounterEffectOutcome::DecrementApplied { rows_matched } => Some(*rows_matched),
             _ => None,
         })
         .unwrap_or(0)
 }
-fn first_read_for(effects: &[CounterEffect], wanted: SemaOperation) -> u64 {
+
+fn first_read_rows(effects: &OperationEffects<CounterCommand, CounterEffectOutcome>) -> u64 {
     effects
-        .iter()
-        .find_map(|effect| match (effect.sema_operation, &effect.outcome) {
-            (sema_operation, CounterEffectOutcome::Read { rows_read })
-                if sema_operation == wanted =>
-            {
-                Some(*rows_read)
-            }
+        .component_effects()
+        .find_map(|effect| match effect {
+            CounterEffectOutcome::ReadCompleted { rows_read } => Some(*rows_read),
             _ => None,
         })
         .unwrap_or(0)
@@ -220,12 +198,12 @@ impl Default for CounterEngine {
 
 impl CommandExecutor for CounterEngine {
     type Command = CounterCommand;
-    type Effect = CounterEffect;
+    type ComponentEffect = CounterEffectOutcome;
     type Error = PoisonError;
     fn execute_atomic_batch(
         &mut self,
         plan: BatchPlan<Self::Command>,
-    ) -> Result<BatchEffects<Self::Effect>, Self::Error> {
+    ) -> Result<BatchEffects<Self::Command, Self::ComponentEffect>, Self::Error> {
         if self.poisoned {
             return Err(PoisonError);
         }
@@ -243,56 +221,37 @@ impl CounterEngine {
     fn execute_operation_plan(
         &mut self,
         operation_plan: OperationPlan<CounterCommand>,
-    ) -> OperationEffects<CounterEffect> {
-        let effects: Vec<CounterEffect> = operation_plan
-            .into_commands()
-            .into_iter()
-            .map(|command| self.execute_command(command))
-            .collect();
-        self.committed += effects.len() as u64;
-        OperationEffects::new(effects)
+    ) -> OperationEffects<CounterCommand, CounterEffectOutcome> {
+        let command_effects: Vec<CommandEffect<CounterCommand, CounterEffectOutcome>> =
+            operation_plan
+                .into_commands()
+                .into_iter()
+                .map(|command| self.execute_command(command))
+                .collect();
+        self.committed += command_effects.len() as u64;
+        OperationEffects::new(
+            signal_frame::NonEmpty::try_from_vec(command_effects)
+                .expect("operation plan is statically non-empty"),
+        )
     }
 
-    fn execute_command(&self, command: CounterCommand) -> CounterEffect {
-        match command.sema_operation() {
-            SemaOperation::Assert => CounterEffect::new(
-                SemaOperation::Assert,
-                CounterEffectOutcome::Wrote {
-                    rows_written: 1,
-                    rows_matched: 0,
-                },
-            ),
-            SemaOperation::Mutate => CounterEffect::new(
-                SemaOperation::Mutate,
-                CounterEffectOutcome::Wrote {
-                    rows_written: 1,
-                    rows_matched: 1,
-                },
-            ),
-            SemaOperation::Retract => CounterEffect::new(
-                SemaOperation::Retract,
-                CounterEffectOutcome::Wrote {
-                    rows_written: 1,
-                    rows_matched: 1,
-                },
-            ),
-            SemaOperation::Match => CounterEffect::new(
-                SemaOperation::Match,
-                CounterEffectOutcome::Read { rows_read: 7 },
-            ),
-            SemaOperation::Subscribe => CounterEffect::new(
-                SemaOperation::Subscribe,
-                CounterEffectOutcome::Stream {
-                    subscription_token: 42,
-                },
-            ),
-            SemaOperation::Validate => CounterEffect::new(
-                SemaOperation::Validate,
-                CounterEffectOutcome::Validated {
-                    predicate_held: true,
-                },
-            ),
-        }
+    fn execute_command(
+        &self,
+        command: CounterCommand,
+    ) -> CommandEffect<CounterCommand, CounterEffectOutcome> {
+        let effect = match &command {
+            CounterCommand::Increment { .. } => {
+                CounterEffectOutcome::IncrementApplied { rows_written: 1 }
+            }
+            CounterCommand::Decrement { .. } => {
+                CounterEffectOutcome::DecrementApplied { rows_matched: 1 }
+            }
+            CounterCommand::Query => CounterEffectOutcome::ReadCompleted { rows_read: 7 },
+            CounterCommand::ResetTracking => CounterEffectOutcome::TrackingValidated {
+                predicate_held: true,
+            },
+        };
+        CommandEffect::new(command, effect)
     }
 }
 

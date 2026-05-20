@@ -33,7 +33,9 @@ use std::sync::{Arc, Mutex};
 /// [`Self::publish_operation_received`] with `&Operation` from
 /// the request payload set and
 /// [`Self::publish_effect_emitted`] with `&Effect` after
-/// each effect commits.
+/// each command-effect pair commits. In normal executor use the
+/// effect type is
+/// [`CommandEffect<Command, ComponentEffect>`](crate::CommandEffect).
 pub trait ObserverChannel<Operation, Effect> {
     /// Publish that an inbound contract operation was received.
     /// Called once per operation before lowering happens.

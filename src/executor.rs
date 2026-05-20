@@ -6,29 +6,29 @@ use signal_frame::{
 };
 
 use crate::engine::CommandExecutor;
-use crate::lowering::{BatchPlan, Lowering};
+use crate::lowering::{BatchPlan, CommandEffect, Lowering};
 use crate::observer::ObserverSet;
 
 pub struct Executor<L, S>
 where
     L: Lowering,
-    S: CommandExecutor<Command = L::Command, Effect = L::Effect>,
+    S: CommandExecutor<Command = L::Command, ComponentEffect = L::ComponentEffect>,
 {
     lowering: L,
     command_executor: S,
-    observers: ObserverSet<L::Operation, L::Effect>,
+    observers: ObserverSet<L::Operation, CommandEffect<L::Command, L::ComponentEffect>>,
     last_engine_error: Option<S::Error>,
 }
 
 impl<L, S> Executor<L, S>
 where
     L: Lowering,
-    S: CommandExecutor<Command = L::Command, Effect = L::Effect>,
+    S: CommandExecutor<Command = L::Command, ComponentEffect = L::ComponentEffect>,
 {
     pub fn new(
         lowering: L,
         command_executor: S,
-        observers: ObserverSet<L::Operation, L::Effect>,
+        observers: ObserverSet<L::Operation, CommandEffect<L::Command, L::ComponentEffect>>,
     ) -> Self {
         Self {
             lowering,
@@ -44,7 +44,9 @@ where
     pub fn command_executor(&self) -> &S {
         &self.command_executor
     }
-    pub fn observers(&self) -> &ObserverSet<L::Operation, L::Effect> {
+    pub fn observers(
+        &self,
+    ) -> &ObserverSet<L::Operation, CommandEffect<L::Command, L::ComponentEffect>> {
         &self.observers
     }
     pub fn take_last_engine_error(&mut self) -> Option<S::Error> {
@@ -82,8 +84,8 @@ where
         };
 
         for operation_effects in batch_effects.operations() {
-            for effect in operation_effects.effects() {
-                self.observers.publish_effect_emitted(effect);
+            for command_effect in operation_effects.command_effects() {
+                self.observers.publish_effect_emitted(command_effect);
             }
         }
 
@@ -96,7 +98,7 @@ where
         );
         let head_reply = self
             .lowering
-            .reply_from_effects(&head_operation, head_effects.effects());
+            .reply_from_effects(&head_operation, &head_effects);
 
         let tail_replies: Vec<SubReply<L::Reply>> = tail_operations
             .iter()
@@ -104,7 +106,7 @@ where
             .map(|(operation, operation_effects)| {
                 SubReply::Ok(
                     self.lowering
-                        .reply_from_effects(operation, operation_effects.effects()),
+                        .reply_from_effects(operation, operation_effects),
                 )
             })
             .collect();

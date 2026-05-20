@@ -286,7 +286,7 @@ dependencies = [
 [[package]]
 name = "signal-sema"
 version = "0.1.0"
-source = "git+https://github.com/LiGoldragon/signal-sema.git?branch=main#d056fc5a8a26dcd055d7f75bfde2376a9a93426b"
+source = "git+https://github.com/LiGoldragon/signal-sema.git?branch=main#f4d3fe51b6052e289381a437221eb1dac899b64d"
 dependencies = [
  "nota-codec",
  "rkyv",

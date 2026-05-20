@@ -1,8 +1,8 @@
 //! [`FrameObserverBridge`]: the crate-boundary projection bridge.
 //!
 //! Per /246 §3 + /141 hole 3: the executor publishes **raw execution
-//! facts** (`Operation`, component-local `Effect`); the macro-generated
-//! `<Channel>ObserverSet` publishes **channel event records**
+//! facts** (`Operation`, `CommandEffect<Command, ComponentEffect>`);
+//! the macro-generated `<Channel>ObserverSet` publishes **channel event records**
 //! (`OperationEvent`, `EffectEvent`). Something has to project raw
 //! facts into channel records.
 //!
@@ -11,7 +11,7 @@
 //! 1. A [`signal_frame::ObservationProjection`] impl -- contract-
 //!    specific knowledge of how the channel's
 //!    `OperationEvent` / `EffectEvent` records are built from
-//!    raw operations / effects.
+//!    raw operations / command-effect pairs.
 //! 2. A [`signal_frame::ObservableSet`] impl (typically the
 //!    macro-generated `<Channel>ObserverSet`) -- knows about
 //!    subscriber filters and registration bookkeeping.

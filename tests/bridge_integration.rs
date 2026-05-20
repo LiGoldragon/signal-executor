@@ -3,17 +3,20 @@
 use std::sync::{Arc, Mutex};
 
 use signal_executor::{
-    Executor, FrameObserverBridge, ObservableSet, ObservationProjection, ObserverDelivery,
-    ObserverSet,
+    CommandEffect, Executor, FrameObserverBridge, ObservableSet, ObservationProjection,
+    ObserverDelivery, ObserverSet,
 };
 use signal_frame::{Reply, RequestPayload, SubscriptionTokenInner};
+use signal_sema::{SemaObservation, SemaOperation, SemaOutcome};
 
 mod counter;
 
 use counter::{
-    CounterEffect, CounterEffectOutcome, CounterEngine, CounterLowering, CounterOperation,
+    CounterCommand, CounterEffectOutcome, CounterEngine, CounterLowering, CounterOperation,
     CounterReply,
 };
+
+type CounterCommandEffect = CommandEffect<CounterCommand, CounterEffectOutcome>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct OperationReceived {
@@ -21,8 +24,8 @@ struct OperationReceived {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct SemaEffectEmitted {
-    effect_label: String,
+struct EffectEmitted {
+    observation: SemaObservation,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,7 +58,7 @@ impl CounterObserverSet {
 impl ObservableSet for CounterObserverSet {
     type Token = SubscriptionTokenInner;
     type OperationEvent = OperationReceived;
-    type EffectEvent = SemaEffectEmitted;
+    type EffectEvent = EffectEmitted;
 
     fn publish_operation_received<F>(&self, event: &OperationReceived, mut deliver: F)
     where
@@ -66,9 +69,9 @@ impl ObservableSet for CounterObserverSet {
         }
     }
 
-    fn publish_effect_emitted<F>(&self, event: &SemaEffectEmitted, mut deliver: F)
+    fn publish_effect_emitted<F>(&self, event: &EffectEmitted, mut deliver: F)
     where
-        F: FnMut(SubscriptionTokenInner, &SemaEffectEmitted),
+        F: FnMut(SubscriptionTokenInner, &EffectEmitted),
     {
         for (token, _filter) in self.subscribers.lock().unwrap().iter() {
             deliver(*token, event);
@@ -80,9 +83,9 @@ struct CounterProjection;
 
 impl ObservationProjection for CounterProjection {
     type Operation = CounterOperation;
-    type Effect = CounterEffect;
+    type Effect = CounterCommandEffect;
     type OperationEvent = OperationReceived;
-    type EffectEvent = SemaEffectEmitted;
+    type EffectEvent = EffectEmitted;
 
     fn operation_event(&self, operation: &CounterOperation) -> OperationReceived {
         OperationReceived {
@@ -96,9 +99,9 @@ impl ObservationProjection for CounterProjection {
         }
     }
 
-    fn effect_event(&self, effect: &CounterEffect) -> SemaEffectEmitted {
-        SemaEffectEmitted {
-            effect_label: format!("{:?}", effect.sema_operation),
+    fn effect_event(&self, effect: &CounterCommandEffect) -> EffectEmitted {
+        EffectEmitted {
+            observation: effect.sema_observation(),
         }
     }
 }
@@ -106,7 +109,7 @@ impl ObservationProjection for CounterProjection {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum DeliveredEvent {
     Operation(SubscriptionTokenInner, OperationReceived),
-    Effect(SubscriptionTokenInner, SemaEffectEmitted),
+    Effect(SubscriptionTokenInner, EffectEmitted),
 }
 
 struct RecordingDelivery {
@@ -116,7 +119,7 @@ struct RecordingDelivery {
 impl ObserverDelivery for RecordingDelivery {
     type Token = SubscriptionTokenInner;
     type OperationEvent = OperationReceived;
-    type EffectEvent = SemaEffectEmitted;
+    type EffectEvent = EffectEmitted;
 
     fn deliver_operation_event(&self, token: SubscriptionTokenInner, event: &OperationReceived) {
         self.delivered
@@ -125,7 +128,7 @@ impl ObserverDelivery for RecordingDelivery {
             .push(DeliveredEvent::Operation(token, event.clone()));
     }
 
-    fn deliver_effect_event(&self, token: SubscriptionTokenInner, event: &SemaEffectEmitted) {
+    fn deliver_effect_event(&self, token: SubscriptionTokenInner, event: &EffectEmitted) {
         self.delivered
             .lock()
             .unwrap()
@@ -165,7 +168,10 @@ fn frame_observer_bridge_delivers_projected_events_in_order() {
     match &events[1] {
         DeliveredEvent::Effect(t, event) => {
             assert_eq!(*t, token);
-            assert!(event.effect_label.contains("Assert"));
+            assert_eq!(
+                event.observation,
+                SemaObservation::new(SemaOperation::Assert, SemaOutcome::Asserted),
+            );
         }
         _ => panic!("expected effect event second"),
     }

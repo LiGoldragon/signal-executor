@@ -18,21 +18,23 @@
 //!   ran-but-not-authoritative and lowered-but-not-committed cases.
 
 use signal_executor::{
-    CommandExecutor, Executor, Lowering, ObserverSet, RecordedEvent, RecordingChannel, SemaEffect,
-    SemaEffectOutcome,
+    CommandEffect, CommandExecutor, Executor, Lowering, ObserverSet, RecordedEvent,
+    RecordingChannel,
 };
 use signal_frame::{
     AcceptedOutcome, BatchFailureReason, CommitStatus, OperationFailureReason, Reply,
     RequestBuilder, RequestPayload, RetryClassification, SubReply,
 };
-use signal_sema::SemaOperation;
+use signal_sema::{SemaObservation, SemaOperation, SemaOutcome};
 
 mod counter;
 
 use counter::{
-    CounterEffect, CounterEffectOutcome, CounterEngine, CounterLowering, CounterOperation,
+    CounterCommand, CounterEffectOutcome, CounterEngine, CounterLowering, CounterOperation,
     CounterReply, MagnitudeRejectionReason, PoisonError,
 };
+
+type CounterCommandEffect = CommandEffect<CounterCommand, CounterEffectOutcome>;
 
 #[test]
 fn single_increment_round_trip() {
@@ -283,7 +285,8 @@ fn multi_operation_engine_rejection_is_all_or_nothing() {
 
 #[test]
 fn observer_publication_order_accepted() {
-    let recording = std::sync::Arc::new(RecordingChannel::<CounterOperation, CounterEffect>::new());
+    let recording =
+        std::sync::Arc::new(RecordingChannel::<CounterOperation, CounterCommandEffect>::new());
     let observers = ObserverSet::new(ArcChannel(recording.clone()));
 
     let mut executor = Executor::new(CounterLowering::new(), CounterEngine::new(), observers);
@@ -299,8 +302,8 @@ fn observer_publication_order_accepted() {
 
     let events = recording.events();
 
-    // OperationReceived for every payload first, then SemaEffectEmitted
-    // for every committed effect in commit order.
+    // OperationReceived for every payload first, then EffectEmitted
+    // for every committed component-local command effect in commit order.
     assert_eq!(events.len(), 4);
     assert!(matches!(
         events[0],
@@ -310,25 +313,26 @@ fn observer_publication_order_accepted() {
         events[1],
         RecordedEvent::OperationReceived(CounterOperation::Decrement(1)),
     ));
-    assert!(matches!(
-        events[2],
-        RecordedEvent::EffectEmitted(CounterEffect {
-            sema_operation: SemaOperation::Assert,
-            ..
-        }),
-    ));
-    assert!(matches!(
-        events[3],
-        RecordedEvent::EffectEmitted(CounterEffect {
-            sema_operation: SemaOperation::Retract,
-            ..
-        }),
-    ));
+    let RecordedEvent::EffectEmitted(effect) = &events[2] else {
+        panic!("expected first committed effect");
+    };
+    assert_eq!(
+        effect.sema_observation(),
+        SemaObservation::new(SemaOperation::Assert, SemaOutcome::Asserted),
+    );
+    let RecordedEvent::EffectEmitted(effect) = &events[3] else {
+        panic!("expected second committed effect");
+    };
+    assert_eq!(
+        effect.sema_observation(),
+        SemaObservation::new(SemaOperation::Retract, SemaOutcome::Retracted),
+    );
 }
 
 #[test]
 fn observer_receives_operations_even_on_lowering_rejection() {
-    let recording = std::sync::Arc::new(RecordingChannel::<CounterOperation, CounterEffect>::new());
+    let recording =
+        std::sync::Arc::new(RecordingChannel::<CounterOperation, CounterCommandEffect>::new());
     let observers = ObserverSet::new(ArcChannel(recording.clone()));
 
     let mut executor = Executor::new(CounterLowering::new(), CounterEngine::new(), observers);
@@ -446,9 +450,7 @@ impl<Operation: Clone + Send + Sync + 'static, Effect: Clone + Send + Sync + 'st
 fn _type_uses(
     _lower: impl Lowering,
     _engine: impl CommandExecutor,
-    _effect: SemaEffect,
-    _outcome: SemaEffectOutcome,
-    _counter_effect: CounterEffect,
+    _command_effect: CounterCommandEffect,
     _counter_outcome: CounterEffectOutcome,
 ) {
 }

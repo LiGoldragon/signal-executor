@@ -2,38 +2,58 @@
 //! `RecordingChannel`, `RecordedEvent`).
 
 use signal_executor::{
-    ObserverChannel, ObserverSet, RecordedEvent, RecordingChannel, SemaEffect, SemaEffectOutcome,
+    CommandEffect, ObserverChannel, ObserverSet, RecordedEvent, RecordingChannel,
 };
-use signal_sema::SemaOperation;
+use signal_sema::{SemaOperation, SemaOutcome, ToSemaOperation, ToSemaOutcome};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DummyOperation(&'static str);
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DummyCommand {
+    Submit,
+}
+
+impl ToSemaOperation for DummyCommand {
+    fn to_sema_operation(&self) -> SemaOperation {
+        match self {
+            Self::Submit => SemaOperation::Assert,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DummyEffect {
+    Applied,
+}
+
+impl ToSemaOutcome for DummyEffect {
+    fn to_sema_outcome(&self) -> SemaOutcome {
+        match self {
+            Self::Applied => SemaOutcome::Asserted,
+        }
+    }
+}
+
+type DummyCommandEffect = CommandEffect<DummyCommand, DummyEffect>;
+
+fn dummy_command_effect() -> DummyCommandEffect {
+    CommandEffect::new(DummyCommand::Submit, DummyEffect::Applied)
+}
+
 #[test]
 fn no_op_observer_publishes_silently() {
-    let set: ObserverSet<DummyOperation, SemaEffect> = ObserverSet::no_op();
+    let set: ObserverSet<DummyOperation, DummyCommandEffect> = ObserverSet::no_op();
     set.publish_operation_received(&DummyOperation("Submit"));
-    set.publish_effect_emitted(&SemaEffect::new(
-        SemaOperation::Assert,
-        SemaEffectOutcome::Wrote {
-            rows_written: 1,
-            rows_matched: 0,
-        },
-    ));
+    set.publish_effect_emitted(&dummy_command_effect());
     // No assertions -- no panic is the witness.
 }
 
 #[test]
 fn recording_channel_logs_operations_then_effects() {
-    let channel = RecordingChannel::<DummyOperation, SemaEffect>::new();
+    let channel = RecordingChannel::<DummyOperation, DummyCommandEffect>::new();
     channel.publish_operation_received(&DummyOperation("Increment"));
-    channel.publish_effect_emitted(&SemaEffect::new(
-        SemaOperation::Assert,
-        SemaEffectOutcome::Wrote {
-            rows_written: 3,
-            rows_matched: 0,
-        },
-    ));
+    channel.publish_effect_emitted(&dummy_command_effect());
 
     let events = channel.events();
     assert_eq!(events.len(), 2);
@@ -46,17 +66,17 @@ fn recording_channel_logs_operations_then_effects() {
 
 #[test]
 fn observer_set_clones_share_underlying_channel() {
-    let channel = RecordingChannel::<DummyOperation, SemaEffect>::new();
+    let channel = RecordingChannel::<DummyOperation, DummyCommandEffect>::new();
     // Use the channel directly to capture events for assertion;
     // wrap a fresh copy in the observer set via the same Arc.
     use std::sync::Arc;
 
-    struct ArcChannel(Arc<RecordingChannel<DummyOperation, SemaEffect>>);
-    impl ObserverChannel<DummyOperation, SemaEffect> for ArcChannel {
+    struct ArcChannel(Arc<RecordingChannel<DummyOperation, DummyCommandEffect>>);
+    impl ObserverChannel<DummyOperation, DummyCommandEffect> for ArcChannel {
         fn publish_operation_received(&self, operation: &DummyOperation) {
             self.0.publish_operation_received(operation);
         }
-        fn publish_effect_emitted(&self, effect: &SemaEffect) {
+        fn publish_effect_emitted(&self, effect: &DummyCommandEffect) {
             self.0.publish_effect_emitted(effect);
         }
     }
