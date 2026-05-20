@@ -1,9 +1,12 @@
-//! SemaEngine: atomic commit point for Sema operations.
+//! SemaEngine: atomic commit point for component-local commands.
 
 use crate::effect::SemaEffect;
-use signal_sema::SemaOperation;
 
 pub trait SemaEngine {
+    type Command;
     type Error;
-    fn execute_atomic(&mut self, ops: Vec<SemaOperation>) -> Result<Vec<SemaEffect>, Self::Error>;
+    fn execute_atomic(
+        &mut self,
+        commands: Vec<Self::Command>,
+    ) -> Result<Vec<SemaEffect>, Self::Error>;
 }

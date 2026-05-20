@@ -1,10 +1,8 @@
 //! Executor: orchestrates contract-to-Sema execution per /246.
 
 use signal_frame::{
-    AcceptedOutcome, NonEmpty, OperationFailureReason, Reply, Request, RequestRejectionReason,
-    SubReply,
+    AcceptedOutcome, BatchFailureReason, NonEmpty, OperationFailureReason, Reply, Request, SubReply,
 };
-use signal_sema::SemaOperation;
 
 use crate::engine::SemaEngine;
 use crate::lowering::Lowering;
@@ -13,7 +11,7 @@ use crate::observer::ObserverSet;
 pub struct Executor<L, S>
 where
     L: Lowering,
-    S: SemaEngine,
+    S: SemaEngine<Command = L::Command>,
 {
     lowering: L,
     sema_engine: S,
@@ -24,7 +22,7 @@ where
 impl<L, S> Executor<L, S>
 where
     L: Lowering,
-    S: SemaEngine,
+    S: SemaEngine<Command = L::Command>,
 {
     pub fn new(lowering: L, sema_engine: S, observers: ObserverSet<L::Operation>) -> Self {
         Self {
@@ -50,31 +48,33 @@ where
 
     pub fn execute(&mut self, request: Request<L::Operation>) -> Reply<L::Reply> {
         let total_operations = request.payloads().len();
-        let mut sema_ops: Vec<SemaOperation> = Vec::new();
+        let mut commands: Vec<L::Command> = Vec::new();
         let mut operation_spans: Vec<(usize, usize)> = Vec::with_capacity(total_operations);
 
         for (operation_index, operation) in request.payloads().iter().enumerate() {
             self.observers.publish_operation_received(operation);
             match self.lowering.lower(operation) {
-                Ok(lowered) => {
-                    let span_start = sema_ops.len();
-                    sema_ops.extend(lowered);
-                    let span_end = sema_ops.len();
+                Ok(operation_plan) => {
+                    let span_start = commands.len();
+                    commands.extend(operation_plan.into_commands());
+                    let span_end = commands.len();
                     operation_spans.push((span_start, span_end));
                 }
                 Err(reply_detail) => {
-                    return aborted_reply(total_operations, operation_index, reply_detail);
+                    return operation_aborted_reply(
+                        total_operations,
+                        operation_index,
+                        reply_detail,
+                    );
                 }
             }
         }
 
-        let effects = match self.sema_engine.execute_atomic(sema_ops) {
+        let effects = match self.sema_engine.execute_atomic(commands) {
             Ok(effects) => effects,
             Err(error) => {
                 self.last_engine_error = Some(error);
-                return Reply::Rejected {
-                    reason: RequestRejectionReason::Internal,
-                };
+                return batch_aborted_reply(total_operations, BatchFailureReason::EngineRejected);
             }
         };
 
@@ -82,19 +82,22 @@ where
             self.observers.publish_sema_effect_emitted(effect);
         }
 
-        let (head_op, tail_ops) = request.payloads.into_head_and_tail();
+        let (head_operation, tail_operations) = request.payloads.into_head_and_tail();
         let (head_start, head_end) = operation_spans[0];
         let head_reply = self
             .lowering
-            .reply_from_effects(&head_op, &effects[head_start..head_end]);
+            .reply_from_effects(&head_operation, &effects[head_start..head_end]);
 
-        let tail_replies: Vec<SubReply<L::Reply>> = tail_ops
+        let tail_replies: Vec<SubReply<L::Reply>> = tail_operations
             .iter()
             .enumerate()
-            .map(|(tail_index, op)| {
+            .map(|(tail_index, operation)| {
                 let operation_index = tail_index + 1;
                 let (start, end) = operation_spans[operation_index];
-                SubReply::Ok(self.lowering.reply_from_effects(op, &effects[start..end]))
+                SubReply::Ok(
+                    self.lowering
+                        .reply_from_effects(operation, &effects[start..end]),
+                )
             })
             .collect();
         let per_operation = NonEmpty::from_head_and_tail(SubReply::Ok(head_reply), tail_replies);
@@ -106,7 +109,11 @@ where
     }
 }
 
-fn aborted_reply<P>(total_operations: usize, failed_at: usize, reply_detail: P) -> Reply<P> {
+fn operation_aborted_reply<P>(
+    total_operations: usize,
+    failed_at: usize,
+    reply_detail: P,
+) -> Reply<P> {
     let mut detail = Some(reply_detail);
     let mut sub_replies: Vec<SubReply<P>> = Vec::with_capacity(total_operations);
     for index in 0..total_operations {
@@ -125,10 +132,23 @@ fn aborted_reply<P>(total_operations: usize, failed_at: usize, reply_detail: P) 
     let per_operation =
         NonEmpty::try_from_vec(sub_replies).expect("requests are statically non-empty");
     Reply::Accepted {
-        outcome: AcceptedOutcome::Aborted {
+        outcome: AcceptedOutcome::OperationAborted {
             failed_at,
             reason: OperationFailureReason::DomainRejection,
         },
+        per_operation,
+    }
+}
+
+fn batch_aborted_reply<P>(total_operations: usize, reason: BatchFailureReason) -> Reply<P> {
+    let per_operation = NonEmpty::try_from_vec(
+        (0..total_operations)
+            .map(|_| SubReply::Invalidated)
+            .collect(),
+    )
+    .expect("requests are statically non-empty");
+    Reply::Accepted {
+        outcome: AcceptedOutcome::BatchAborted { reason },
         per_operation,
     }
 }

@@ -1,7 +1,7 @@
 //! Mock Counter daemon used across executor tests.
 
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
-use signal_executor::{Lowering, SemaEffect, SemaEffectOutcome, SemaEngine};
+use signal_executor::{Lowering, OperationPlan, SemaEffect, SemaEffectOutcome, SemaEngine};
 use signal_frame::RequestPayload;
 use signal_sema::SemaOperation;
 use thiserror::Error;
@@ -14,6 +14,25 @@ pub enum CounterOperation {
     ResetTracking,
 }
 impl RequestPayload for CounterOperation {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CounterCommand {
+    Increment { magnitude: u32 },
+    Decrement { magnitude: u32 },
+    Query,
+    ResetTracking,
+}
+
+impl CounterCommand {
+    pub fn sema_operation(&self) -> SemaOperation {
+        match self {
+            Self::Increment { .. } => SemaOperation::Assert,
+            Self::Decrement { .. } => SemaOperation::Retract,
+            Self::Query => SemaOperation::Match,
+            Self::ResetTracking => SemaOperation::Validate,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CounterReply {
@@ -45,8 +64,12 @@ impl Default for CounterLowering {
 impl Lowering for CounterLowering {
     type Operation = CounterOperation;
     type Reply = CounterReply;
+    type Command = CounterCommand;
 
-    fn lower(&self, operation: &Self::Operation) -> Result<Vec<SemaOperation>, Self::Reply> {
+    fn lower(
+        &self,
+        operation: &Self::Operation,
+    ) -> Result<OperationPlan<Self::Command>, Self::Reply> {
         match operation {
             CounterOperation::Increment(magnitude) | CounterOperation::Decrement(magnitude)
                 if *magnitude == 0 =>
@@ -55,10 +78,20 @@ impl Lowering for CounterLowering {
                     reason: MagnitudeRejectionReason::ZeroMagnitude,
                 })
             }
-            CounterOperation::Increment(_) => Ok(vec![SemaOperation::Assert]),
-            CounterOperation::Decrement(_) => Ok(vec![SemaOperation::Retract]),
-            CounterOperation::Query => Ok(vec![SemaOperation::Match]),
-            CounterOperation::ResetTracking => Ok(Vec::new()),
+            CounterOperation::Increment(magnitude) => {
+                Ok(OperationPlan::single(CounterCommand::Increment {
+                    magnitude: *magnitude,
+                }))
+            }
+            CounterOperation::Decrement(magnitude) => {
+                Ok(OperationPlan::single(CounterCommand::Decrement {
+                    magnitude: *magnitude,
+                }))
+            }
+            CounterOperation::Query => Ok(OperationPlan::single(CounterCommand::Query)),
+            CounterOperation::ResetTracking => {
+                Ok(OperationPlan::single(CounterCommand::ResetTracking))
+            }
         }
     }
 
@@ -85,8 +118,8 @@ impl Lowering for CounterLowering {
 fn first_wrote_for(effects: &[SemaEffect], wanted: SemaOperation) -> u64 {
     effects
         .iter()
-        .find_map(|e| match (e.operation, &e.outcome) {
-            (op, SemaEffectOutcome::Wrote { rows_written, .. }) if op == wanted => {
+        .find_map(|effect| match (effect.operation, &effect.outcome) {
+            (operation, SemaEffectOutcome::Wrote { rows_written, .. }) if operation == wanted => {
                 Some(*rows_written)
             }
             _ => None,
@@ -96,8 +129,8 @@ fn first_wrote_for(effects: &[SemaEffect], wanted: SemaOperation) -> u64 {
 fn first_matched_for(effects: &[SemaEffect], wanted: SemaOperation) -> u64 {
     effects
         .iter()
-        .find_map(|e| match (e.operation, &e.outcome) {
-            (op, SemaEffectOutcome::Wrote { rows_matched, .. }) if op == wanted => {
+        .find_map(|effect| match (effect.operation, &effect.outcome) {
+            (operation, SemaEffectOutcome::Wrote { rows_matched, .. }) if operation == wanted => {
                 Some(*rows_matched)
             }
             _ => None,
@@ -107,8 +140,10 @@ fn first_matched_for(effects: &[SemaEffect], wanted: SemaOperation) -> u64 {
 fn first_read_for(effects: &[SemaEffect], wanted: SemaOperation) -> u64 {
     effects
         .iter()
-        .find_map(|e| match (e.operation, &e.outcome) {
-            (op, SemaEffectOutcome::Read { rows_read }) if op == wanted => Some(*rows_read),
+        .find_map(|effect| match (effect.operation, &effect.outcome) {
+            (operation, SemaEffectOutcome::Read { rows_read }) if operation == wanted => {
+                Some(*rows_read)
+            }
             _ => None,
         })
         .unwrap_or(0)
@@ -132,7 +167,7 @@ impl CounterEngine {
             poisoned: true,
         }
     }
-    pub fn committed_op_count(&self) -> u64 {
+    pub fn committed_operation_count(&self) -> u64 {
         self.committed
     }
 }
@@ -143,39 +178,51 @@ impl Default for CounterEngine {
 }
 
 impl SemaEngine for CounterEngine {
+    type Command = CounterCommand;
     type Error = PoisonError;
-    fn execute_atomic(&mut self, ops: Vec<SemaOperation>) -> Result<Vec<SemaEffect>, Self::Error> {
+    fn execute_atomic(
+        &mut self,
+        commands: Vec<Self::Command>,
+    ) -> Result<Vec<SemaEffect>, Self::Error> {
         if self.poisoned {
             return Err(PoisonError);
         }
-        let effects: Vec<SemaEffect> = ops
+        let effects: Vec<SemaEffect> = commands
             .into_iter()
-            .map(|op| match op {
+            .map(|command| match command.sema_operation() {
                 SemaOperation::Assert => SemaEffect::new(
-                    op,
+                    SemaOperation::Assert,
                     SemaEffectOutcome::Wrote {
                         rows_written: 1,
                         rows_matched: 0,
                     },
                 ),
-                SemaOperation::Mutate | SemaOperation::Retract => SemaEffect::new(
-                    op,
+                SemaOperation::Mutate => SemaEffect::new(
+                    SemaOperation::Mutate,
                     SemaEffectOutcome::Wrote {
                         rows_written: 1,
                         rows_matched: 1,
                     },
                 ),
-                SemaOperation::Match => {
-                    SemaEffect::new(op, SemaEffectOutcome::Read { rows_read: 7 })
-                }
+                SemaOperation::Retract => SemaEffect::new(
+                    SemaOperation::Retract,
+                    SemaEffectOutcome::Wrote {
+                        rows_written: 1,
+                        rows_matched: 1,
+                    },
+                ),
+                SemaOperation::Match => SemaEffect::new(
+                    SemaOperation::Match,
+                    SemaEffectOutcome::Read { rows_read: 7 },
+                ),
                 SemaOperation::Subscribe => SemaEffect::new(
-                    op,
+                    SemaOperation::Subscribe,
                     SemaEffectOutcome::Stream {
                         subscription_token: 42,
                     },
                 ),
                 SemaOperation::Validate => SemaEffect::new(
-                    op,
+                    SemaOperation::Validate,
                     SemaEffectOutcome::Validated {
                         predicate_held: true,
                     },

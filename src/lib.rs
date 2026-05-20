@@ -1,10 +1,10 @@
 //! Lowering trait and Executor struct.
 //!
 //! `signal-executor` is the shared library a triad daemon uses to
-//! translate its public contract operations into Sema operations,
-//! execute them atomically through a [`SemaEngine`], correlate each
-//! Sema effect back to a per-operation reply, and publish operation /
-//! effect events to subscribed observers.
+//! translate its public contract operations into component-local
+//! commands, execute them atomically through a [`SemaEngine`], correlate
+//! each Sema effect back to a per-operation reply, and publish operation
+//! / effect events to subscribed observers.
 //!
 //! The crate is **library only**. It owns no runtime, no socket
 //! mechanics, no actor supervision, no `tokio`. Daemons that drive
@@ -14,8 +14,7 @@
 //! directly. Engine errors are stashed on the executor for
 //! daemon-side retrieval via
 //! [`Executor::take_last_engine_error`](executor::Executor::take_last_engine_error);
-//! the wire reply on engine failure is kernel-shaped
-//! (`Reply::Rejected { Internal }`).
+//! the wire reply on engine failure is an accepted batch abort.
 //!
 //! Per /246 §3: the [`FrameObserverBridge`] composes three pieces
 //! (`ObservationProjection` + `ObservableSet` +
@@ -41,7 +40,7 @@ pub use effect::{SemaEffect, SemaEffectOutcome};
 pub use engine::SemaEngine;
 pub use error::Error;
 pub use executor::Executor;
-pub use lowering::Lowering;
+pub use lowering::{BatchPlan, Lowering, OperationPlan};
 pub use observer::{ObserverChannel, ObserverSet, RecordedEvent, RecordingChannel};
 
 // Re-export the projection/observable-set traits for daemon convenience.

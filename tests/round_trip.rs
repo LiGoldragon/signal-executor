@@ -4,16 +4,16 @@
 //! (`Increment`, `Decrement`, `Query`, `ResetTracking`) backed by a
 //! mock `SemaEngine` that returns canned effects. The tests cover:
 //!
-//! - Single-op accepted round trip (Increment lowers to Assert).
-//! - Multi-op accepted round trip (Increment + Query + Decrement;
-//!   effects correlate per-op via the executor's span tracking).
-//! - Lowering rejection: single-op and multi-op shapes (typed contract
+//! - Single-operation accepted round trip.
+//! - Multi-operation accepted round trip (Increment + Query + Decrement;
+//!   effects correlate per operation via the executor's span tracking).
+//! - Lowering rejection: single-operation and multi-operation shapes (typed contract
 //!   reply detail rides in `SubReply::Failed { detail: Some(...) }`).
-//! - Engine rejection (the engine returns Err on a poisoned op; the
-//!   wire reply is `Reply::Rejected { Internal }`).
+//! - Engine rejection (the engine returns Err on a poisoned command; the
+//!   wire reply is `AcceptedOutcome::BatchAborted`).
 //! - Observer publication ordering (operation-received before
 //!   effects; effects in commit order).
-//! - Empty lowering (ResetTracking lowering to no Sema ops is legal).
+//! - ResetTracking lowers to a typed command, not an empty Sema operation list.
 //! - Doc check: `SubReply::Invalidated` covers both the
 //!   ran-but-not-authoritative and lowered-but-not-committed cases.
 
@@ -22,8 +22,8 @@ use signal_executor::{
     SemaEffectOutcome, SemaEngine,
 };
 use signal_frame::{
-    AcceptedOutcome, OperationFailureReason, Reply, RequestBuilder, RequestPayload,
-    RequestRejectionReason, SubReply,
+    AcceptedOutcome, BatchFailureReason, OperationFailureReason, Reply, RequestBuilder,
+    RequestPayload, SubReply,
 };
 use signal_sema::SemaOperation;
 
@@ -65,7 +65,7 @@ fn single_increment_round_trip() {
 }
 
 #[test]
-fn multi_op_round_trip_correlates_replies() {
+fn multi_operation_round_trip_correlates_replies() {
     let mut executor = Executor::new(
         CounterLowering::new(),
         CounterEngine::new(),
@@ -109,7 +109,7 @@ fn multi_op_round_trip_correlates_replies() {
 }
 
 #[test]
-fn single_op_lowering_rejection_returns_typed_failed_subreply() {
+fn single_operation_lowering_rejection_returns_typed_failed_subreply() {
     let mut executor = Executor::new(
         CounterLowering::new(),
         CounterEngine::new(),
@@ -129,7 +129,7 @@ fn single_op_lowering_rejection_returns_typed_failed_subreply() {
     };
     assert_eq!(
         outcome,
-        AcceptedOutcome::Aborted {
+        AcceptedOutcome::OperationAborted {
             failed_at: 0,
             reason: OperationFailureReason::DomainRejection,
         },
@@ -145,8 +145,8 @@ fn single_op_lowering_rejection_returns_typed_failed_subreply() {
         }),
     ));
 
-    // The engine never saw a call; its committed-ops counter is 0.
-    assert_eq!(executor.sema_engine().committed_op_count(), 0);
+    // The engine never saw a call; its committed-operation counter is 0.
+    assert_eq!(executor.sema_engine().committed_operation_count(), 0);
 }
 
 #[test]
@@ -175,7 +175,7 @@ fn multi_operation_lowering_rejection_invalidates_skips_and_fails() {
     };
     assert_eq!(
         outcome,
-        AcceptedOutcome::Aborted {
+        AcceptedOutcome::OperationAborted {
             failed_at: 1,
             reason: OperationFailureReason::DomainRejection,
         },
@@ -194,23 +194,32 @@ fn multi_operation_lowering_rejection_invalidates_skips_and_fails() {
         },
     ));
     assert!(matches!(replies[2], SubReply::Skipped));
-    assert_eq!(executor.sema_engine().committed_op_count(), 0);
+    assert_eq!(executor.sema_engine().committed_operation_count(), 0);
 }
 
 #[test]
-fn engine_rejection_returns_kernel_internal_reply() {
+fn engine_rejection_returns_batch_aborted_reply() {
     let engine = CounterEngine::with_poison();
     let mut executor = Executor::new(CounterLowering::new(), engine, ObserverSet::no_op());
 
     let request = CounterOperation::Increment(1).into_request();
     let reply = executor.execute(request);
 
-    assert!(matches!(
-        reply,
-        Reply::Rejected {
-            reason: RequestRejectionReason::Internal,
+    let Reply::Accepted {
+        outcome,
+        per_operation,
+    } = reply
+    else {
+        panic!("expected accepted-but-batch-aborted reply");
+    };
+    assert_eq!(
+        outcome,
+        AcceptedOutcome::BatchAborted {
+            reason: BatchFailureReason::EngineRejected,
         },
-    ));
+    );
+    assert_eq!(per_operation.len(), 1);
+    assert!(matches!(per_operation.head(), SubReply::Invalidated));
 
     // The typed engine error stays daemon-side via the executor's
     // last_engine_error stash, retrievable for logs / metrics /
@@ -221,16 +230,16 @@ fn engine_rejection_returns_kernel_internal_reply() {
     assert!(executor.take_last_engine_error().is_none());
 
     // Engine returned Err so no effects committed -- counter still 0.
-    assert_eq!(executor.sema_engine().committed_op_count(), 0);
+    assert_eq!(executor.sema_engine().committed_operation_count(), 0);
 }
 
 #[test]
-fn multi_op_engine_rejection_is_all_or_nothing() {
+fn multi_operation_engine_rejection_is_all_or_nothing() {
     // Witnesses the atomicity contract: when execute_atomic returns
-    // Err for a multi-op request, no effect is visible to the
+    // Err for a multi-operation request, no effect is visible to the
     // caller (the engine's commit counter stays at 0) and the
-    // wire Reply is Rejected. No partial reply per-operation
-    // surface ever appears.
+    // wire reply is a batch abort. No successful partial reply ever
+    // appears.
     let mut executor = Executor::new(
         CounterLowering::new(),
         CounterEngine::with_poison(),
@@ -246,17 +255,26 @@ fn multi_op_engine_rejection_is_all_or_nothing() {
 
     let reply = executor.execute(request);
 
-    // Wire shape carries no per-operation results -- pre-execution
-    // shape from the caller's perspective even though we did call
-    // the engine. Atomicity guarantees no committed effect is
-    // visible.
-    assert!(matches!(
-        reply,
-        Reply::Rejected {
-            reason: RequestRejectionReason::Internal,
+    let Reply::Accepted {
+        outcome,
+        per_operation,
+    } = reply
+    else {
+        panic!("expected accepted-but-batch-aborted reply");
+    };
+    assert_eq!(
+        outcome,
+        AcceptedOutcome::BatchAborted {
+            reason: BatchFailureReason::EngineRejected,
         },
-    ));
-    assert_eq!(executor.sema_engine().committed_op_count(), 0);
+    );
+    assert_eq!(per_operation.len(), 3);
+    assert!(
+        per_operation
+            .iter()
+            .all(|reply| matches!(reply, SubReply::Invalidated)),
+    );
+    assert_eq!(executor.sema_engine().committed_operation_count(), 0);
 }
 
 #[test]
@@ -318,12 +336,12 @@ fn observer_receives_operations_even_on_lowering_rejection() {
         .expect("non-empty request builds");
 
     let reply = executor.execute(request);
-    // Lowering rejection manifests as Reply::Accepted with outcome
-    // Aborted, not as a kernel rejection.
+    // Lowering rejection manifests as Reply::Accepted with operation-aborted
+    // outcome, not as a kernel rejection.
     assert!(matches!(
         reply,
         Reply::Accepted {
-            outcome: AcceptedOutcome::Aborted { .. },
+            outcome: AcceptedOutcome::OperationAborted { .. },
             ..
         },
     ));
@@ -336,17 +354,15 @@ fn observer_receives_operations_even_on_lowering_rejection() {
     assert!(
         events
             .iter()
-            .all(|e| !matches!(e, RecordedEvent::SemaEffectEmitted(_))),
+            .all(|event| !matches!(event, RecordedEvent::SemaEffectEmitted(_))),
         "no effects should be emitted on lowering rejection",
     );
 }
 
 #[test]
-fn empty_lowering_is_legal() {
-    // ResetTracking has zero Sema effect by design (the handler just
-    // records a daemon-side intent and emits no executable commands).
-    // The executor should accept, call the engine with an empty
-    // command vec, and build the reply from the empty effects slice.
+fn reset_tracking_lowers_to_typed_command() {
+    // ResetTracking is deliberately represented as a typed component-local
+    // command. The executor should not need a special empty-lowering path.
     let mut executor = Executor::new(
         CounterLowering::new(),
         CounterEngine::new(),
@@ -369,13 +385,13 @@ fn empty_lowering_is_legal() {
         panic!("expected SubReply::Ok");
     };
     assert!(matches!(payload, CounterReply::TrackingReset));
+    assert_eq!(executor.sema_engine().committed_operation_count(), 1);
 }
 
 #[test]
-fn kernel_rejection_does_not_carry_contract_reply() {
-    // Engine rejection produces a kernel-shaped reply with no
-    // per-operation contract-reply detail -- the typed engine cause
-    // stays daemon-side, not on the wire.
+fn engine_rejection_does_not_carry_contract_reply() {
+    // Engine rejection produces a batch-aborted reply with no typed contract
+    // detail -- the typed engine cause stays daemon-side, not on the wire.
     let mut executor = Executor::new(
         CounterLowering::new(),
         CounterEngine::with_poison(),
@@ -386,10 +402,19 @@ fn kernel_rejection_does_not_carry_contract_reply() {
     let reply = executor.execute(request);
 
     match reply {
-        Reply::Rejected { reason } => {
-            assert_eq!(reason, RequestRejectionReason::Internal);
+        Reply::Accepted {
+            outcome,
+            per_operation,
+        } => {
+            assert_eq!(
+                outcome,
+                AcceptedOutcome::BatchAborted {
+                    reason: BatchFailureReason::EngineRejected,
+                },
+            );
+            assert!(matches!(per_operation.head(), SubReply::Invalidated));
         }
-        Reply::Accepted { .. } => panic!("engine failure must produce Reply::Rejected"),
+        Reply::Rejected { .. } => panic!("engine failure must produce accepted batch abort"),
     }
 }
 

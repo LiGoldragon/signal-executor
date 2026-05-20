@@ -82,9 +82,9 @@ impl ObservationProjection for CounterProjection {
     type OperationEvent = OperationReceived;
     type EffectEvent = SemaEffectEmitted;
 
-    fn operation_event(&self, op: &CounterOperation) -> OperationReceived {
+    fn operation_event(&self, operation: &CounterOperation) -> OperationReceived {
         OperationReceived {
-            operation_kind: match op {
+            operation_kind: match operation {
                 CounterOperation::Increment(_) => "Increment",
                 CounterOperation::Decrement(_) => "Decrement",
                 CounterOperation::Query => "Query",
@@ -170,4 +170,4 @@ fn frame_observer_bridge_delivers_projected_events_in_order() {
 }
 
 #[allow(dead_code)]
-fn _type_use(_op: SemaOperation, _outcome: SemaEffectOutcome, _reply: CounterReply) {}
+fn _type_use(_operation: SemaOperation, _outcome: SemaEffectOutcome, _reply: CounterReply) {}
