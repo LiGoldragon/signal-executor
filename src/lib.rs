@@ -10,13 +10,25 @@
 //! mechanics, no actor supervision, no `tokio`. Daemons that drive
 //! the executor wire it into whatever runtime they already use.
 //!
+//! Per /246 §1: `Executor::execute` returns `Reply<L::Reply>`
+//! directly. Engine errors are stashed on the executor for
+//! daemon-side retrieval via
+//! [`Executor::take_last_engine_error`](executor::Executor::take_last_engine_error);
+//! the wire reply on engine failure is kernel-shaped
+//! (`Reply::Rejected { Internal }`).
+//!
+//! Per /246 §3: the [`FrameObserverBridge`] composes three pieces
+//! (`ObservationProjection` + `ObservableSet` +
+//! [`ObserverDelivery`]) into an [`ObserverChannel<Operation>`]
+//! that the executor publishes through. The traits live in
+//! signal-frame so signal-frame's macro can emit the per-channel
+//! impls without depending on signal-executor; this crate composes
+//! them into the bridge struct.
+//!
 //! See `ARCHITECTURE.md` for the atomicity contract, failure-mode
 //! taxonomy, reply correlation, and observer publication ordering.
-//! The motivating design lives in the primary workspace at
-//! `reports/designer/243-reply-naming-observer-hook-executor-trait.md`
-//! §3, with the broader migration spec at
-//! `reports/designer/241-signal-architecture-migration-guide.md`.
 
+pub mod bridge;
 pub mod effect;
 pub mod engine;
 pub mod error;
@@ -24,9 +36,13 @@ pub mod executor;
 pub mod lowering;
 pub mod observer;
 
+pub use bridge::{FrameObserverBridge, ObserverDelivery};
 pub use effect::{SemaEffect, SemaEffectOutcome};
 pub use engine::SemaEngine;
 pub use error::Error;
-pub use executor::{Executor, ExecutorOutcome};
+pub use executor::Executor;
 pub use lowering::Lowering;
 pub use observer::{ObserverChannel, ObserverSet, RecordedEvent, RecordingChannel};
+
+// Re-export the projection/observable-set traits for daemon convenience.
+pub use signal_frame::{ObservableSet, ObservationProjection};

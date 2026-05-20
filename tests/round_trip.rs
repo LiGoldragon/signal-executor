@@ -1,31 +1,36 @@
 //! End-to-end tests through a mock Counter daemon.
 //!
-//! The Counter mock implements `Lowering` for a three-operation
-//! channel (`Increment`, `Decrement`, `Query`) backed by a mock
-//! `SemaEngine` that returns canned effects. The tests cover:
+//! The Counter mock implements `Lowering` for a four-operation channel
+//! (`Increment`, `Decrement`, `Query`, `ResetTracking`) backed by a
+//! mock `SemaEngine` that returns canned effects. The tests cover:
 //!
 //! - Single-op accepted round trip (Increment lowers to Assert).
-//! - Multi-op accepted round trip (Increment + Query lower to
-//!   Assert + Match; effects correlate per-op).
-//! - Lowering rejection (Increment with a negative-overflow check).
-//! - Engine rejection (the engine returns Err on a poisoned op).
+//! - Multi-op accepted round trip (Increment + Query + Decrement;
+//!   effects correlate per-op via the executor's span tracking).
+//! - Lowering rejection: single-op and multi-op shapes (typed contract
+//!   reply detail rides in `SubReply::Failed { detail: Some(...) }`).
+//! - Engine rejection (the engine returns Err on a poisoned op; the
+//!   wire reply is `Reply::Rejected { Internal }`).
 //! - Observer publication ordering (operation-received before
 //!   effects; effects in commit order).
-//! - Empty lowering (Query lowering to no Sema ops is legal).
+//! - Empty lowering (ResetTracking lowering to no Sema ops is legal).
+//! - Doc check: `SubReply::Invalidated` covers both the
+//!   ran-but-not-authoritative and lowered-but-not-committed cases.
 
 use signal_executor::{
-    Executor, ExecutorOutcome, Lowering, ObserverSet, RecordedEvent, RecordingChannel, SemaEffect,
+    Executor, Lowering, ObserverSet, RecordedEvent, RecordingChannel, SemaEffect,
     SemaEffectOutcome, SemaEngine,
 };
 use signal_frame::{
-    AcceptedOutcome, Reply, RequestBuilder, RequestPayload, RequestRejectionReason, SubReply,
+    AcceptedOutcome, OperationFailureReason, Reply, RequestBuilder, RequestPayload,
+    RequestRejectionReason, SubReply,
 };
 use signal_sema::SemaOperation;
 
 mod counter;
 
 use counter::{
-    CounterEngine, CounterLowering, CounterOperation, CounterRejectionReason, CounterReply,
+    CounterEngine, CounterLowering, CounterOperation, CounterReply, MagnitudeRejectionReason,
     PoisonError,
 };
 
@@ -38,14 +43,7 @@ fn single_increment_round_trip() {
     );
 
     let request = CounterOperation::Increment(3).into_request();
-    let outcome = executor.execute(request);
-
-    let ExecutorOutcome::Accepted { reply, effects } = outcome else {
-        panic!("expected accepted outcome");
-    };
-
-    assert_eq!(effects.len(), 1);
-    assert_eq!(effects[0].operation, SemaOperation::Assert);
+    let reply = executor.execute(request);
 
     let Reply::Accepted {
         outcome,
@@ -54,10 +52,10 @@ fn single_increment_round_trip() {
     else {
         panic!("expected Reply::Accepted");
     };
-    assert_eq!(outcome, AcceptedOutcome::Completed);
+    assert_eq!(outcome, AcceptedOutcome::Committed);
     assert_eq!(per_operation.len(), 1);
 
-    let SubReply::Ok { payload } = per_operation.head() else {
+    let SubReply::Ok(payload) = per_operation.head() else {
         panic!("expected SubReply::Ok");
     };
     let CounterReply::Incremented { rows_written } = payload else {
@@ -81,19 +79,7 @@ fn multi_op_round_trip_correlates_replies() {
         .build()
         .expect("non-empty request builds");
 
-    let outcome = executor.execute(request);
-    let ExecutorOutcome::Accepted { reply, effects } = outcome else {
-        panic!("expected accepted outcome");
-    };
-
-    // Two writes (Increment+Decrement) and one read (Query) -- effects
-    // arrive in lowering order: Assert, Match, Retract. The Query
-    // operation lowers to a Match.
-    assert_eq!(effects.len(), 3);
-    assert_eq!(effects[0].operation, SemaOperation::Assert);
-    assert_eq!(effects[1].operation, SemaOperation::Match);
-    assert_eq!(effects[2].operation, SemaOperation::Retract);
-
+    let reply = executor.execute(request);
     let Reply::Accepted {
         outcome,
         per_operation,
@@ -101,29 +87,29 @@ fn multi_op_round_trip_correlates_replies() {
     else {
         panic!("expected Reply::Accepted");
     };
-    assert_eq!(outcome, AcceptedOutcome::Completed);
+    assert_eq!(outcome, AcceptedOutcome::Committed);
     assert_eq!(per_operation.len(), 3);
 
     let mut payloads = per_operation.iter();
 
-    let SubReply::Ok { payload } = payloads.next().expect("head") else {
+    let SubReply::Ok(payload) = payloads.next().expect("head") else {
         panic!("expected SubReply::Ok at index 0");
     };
     assert!(matches!(payload, CounterReply::Incremented { .. }));
 
-    let SubReply::Ok { payload } = payloads.next().expect("tail[0]") else {
+    let SubReply::Ok(payload) = payloads.next().expect("tail[0]") else {
         panic!("expected SubReply::Ok at index 1");
     };
     assert!(matches!(payload, CounterReply::Queried { .. }));
 
-    let SubReply::Ok { payload } = payloads.next().expect("tail[1]") else {
+    let SubReply::Ok(payload) = payloads.next().expect("tail[1]") else {
         panic!("expected SubReply::Ok at index 2");
     };
     assert!(matches!(payload, CounterReply::Decremented { .. }));
 }
 
 #[test]
-fn lowering_rejection_does_not_call_engine() {
+fn single_op_lowering_rejection_returns_typed_failed_subreply() {
     let mut executor = Executor::new(
         CounterLowering::new(),
         CounterEngine::new(),
@@ -132,35 +118,92 @@ fn lowering_rejection_does_not_call_engine() {
 
     // 0 is the rejected magnitude per the Counter lowering.
     let request = CounterOperation::Increment(0).into_request();
-    let outcome = executor.execute(request);
+    let reply = executor.execute(request);
 
-    let ExecutorOutcome::LoweringRejected { reply, reason } = outcome else {
-        panic!("expected LoweringRejected");
+    let Reply::Accepted {
+        outcome,
+        per_operation,
+    } = reply
+    else {
+        panic!("expected accepted-but-aborted reply");
     };
-
-    assert!(matches!(
-        reply,
-        Reply::Rejected {
-            reason: RequestRejectionReason::Internal,
+    assert_eq!(
+        outcome,
+        AcceptedOutcome::Aborted {
+            failed_at: 0,
+            reason: OperationFailureReason::DomainRejection,
         },
+    );
+    let SubReply::Failed { reason, detail } = per_operation.head() else {
+        panic!("expected failed subreply");
+    };
+    assert_eq!(*reason, OperationFailureReason::DomainRejection);
+    assert!(matches!(
+        detail,
+        Some(CounterReply::MagnitudeRejected {
+            reason: MagnitudeRejectionReason::ZeroMagnitude,
+        }),
     ));
-    assert!(matches!(reason, CounterRejectionReason::ZeroMagnitude));
 
     // The engine never saw a call; its committed-ops counter is 0.
     assert_eq!(executor.sema_engine().committed_op_count(), 0);
 }
 
 #[test]
-fn engine_rejection_when_atomic_fails() {
+fn multi_operation_lowering_rejection_invalidates_skips_and_fails() {
+    let mut executor = Executor::new(
+        CounterLowering::new(),
+        CounterEngine::new(),
+        ObserverSet::no_op(),
+    );
+
+    let request = RequestBuilder::new()
+        .with(CounterOperation::Increment(3))
+        .with(CounterOperation::Increment(0))
+        .with(CounterOperation::Query)
+        .build()
+        .expect("non-empty request builds");
+
+    let reply = executor.execute(request);
+
+    let Reply::Accepted {
+        outcome,
+        per_operation,
+    } = reply
+    else {
+        panic!("expected accepted-but-aborted reply");
+    };
+    assert_eq!(
+        outcome,
+        AcceptedOutcome::Aborted {
+            failed_at: 1,
+            reason: OperationFailureReason::DomainRejection,
+        },
+    );
+
+    let replies: Vec<_> = per_operation.iter().collect();
+    assert_eq!(replies.len(), 3);
+    assert!(matches!(replies[0], SubReply::Invalidated));
+    assert!(matches!(
+        replies[1],
+        SubReply::Failed {
+            reason: OperationFailureReason::DomainRejection,
+            detail: Some(CounterReply::MagnitudeRejected {
+                reason: MagnitudeRejectionReason::ZeroMagnitude,
+            }),
+        },
+    ));
+    assert!(matches!(replies[2], SubReply::Skipped));
+    assert_eq!(executor.sema_engine().committed_op_count(), 0);
+}
+
+#[test]
+fn engine_rejection_returns_kernel_internal_reply() {
     let engine = CounterEngine::with_poison();
     let mut executor = Executor::new(CounterLowering::new(), engine, ObserverSet::no_op());
 
     let request = CounterOperation::Increment(1).into_request();
-    let outcome = executor.execute(request);
-
-    let ExecutorOutcome::EngineRejected { reply, error } = outcome else {
-        panic!("expected EngineRejected");
-    };
+    let reply = executor.execute(request);
 
     assert!(matches!(
         reply,
@@ -168,7 +211,14 @@ fn engine_rejection_when_atomic_fails() {
             reason: RequestRejectionReason::Internal,
         },
     ));
-    assert!(matches!(error, PoisonError));
+
+    // The typed engine error stays daemon-side via the executor's
+    // last_engine_error stash, retrievable for logs / metrics /
+    // supervision but NOT carried on the wire reply.
+    let taken = executor.take_last_engine_error();
+    assert_eq!(taken, Some(PoisonError));
+    // Once taken, the stash is cleared.
+    assert!(executor.take_last_engine_error().is_none());
 
     // Engine returned Err so no effects committed -- counter still 0.
     assert_eq!(executor.sema_engine().committed_op_count(), 0);
@@ -194,11 +244,7 @@ fn multi_op_engine_rejection_is_all_or_nothing() {
         .build()
         .expect("non-empty request builds");
 
-    let outcome = executor.execute(request);
-
-    let ExecutorOutcome::EngineRejected { reply, .. } = outcome else {
-        panic!("expected EngineRejected");
-    };
+    let reply = executor.execute(request);
 
     // Wire shape carries no per-operation results -- pre-execution
     // shape from the caller's perspective even though we did call
@@ -226,8 +272,8 @@ fn observer_publication_order_accepted() {
         .build()
         .expect("non-empty request builds");
 
-    let outcome = executor.execute(request);
-    assert!(outcome.is_accepted());
+    let reply = executor.execute(request);
+    assert!(matches!(reply, Reply::Accepted { .. }));
 
     let events = recording.events();
 
@@ -271,8 +317,16 @@ fn observer_receives_operations_even_on_lowering_rejection() {
         .build()
         .expect("non-empty request builds");
 
-    let outcome = executor.execute(request);
-    assert!(matches!(outcome, ExecutorOutcome::LoweringRejected { .. }));
+    let reply = executor.execute(request);
+    // Lowering rejection manifests as Reply::Accepted with outcome
+    // Aborted, not as a kernel rejection.
+    assert!(matches!(
+        reply,
+        Reply::Accepted {
+            outcome: AcceptedOutcome::Aborted { .. },
+            ..
+        },
+    ));
 
     let events = recording.events();
     // Both operations were observed; no effects (lowering failed).
@@ -289,11 +343,10 @@ fn observer_receives_operations_even_on_lowering_rejection() {
 
 #[test]
 fn empty_lowering_is_legal() {
-    // Configure operation has zero Sema effect by design (the
-    // configure handler just records a daemon-side intent and
-    // emits no Sema operations). The executor should accept,
-    // call the engine with an empty op vec, and build the reply
-    // from the empty effects slice.
+    // ResetTracking has zero Sema effect by design (the handler just
+    // records a daemon-side intent and emits no executable commands).
+    // The executor should accept, call the engine with an empty
+    // command vec, and build the reply from the empty effects slice.
     let mut executor = Executor::new(
         CounterLowering::new(),
         CounterEngine::new(),
@@ -301,63 +354,43 @@ fn empty_lowering_is_legal() {
     );
 
     let request = CounterOperation::ResetTracking.into_request();
-    let outcome = executor.execute(request);
-    let ExecutorOutcome::Accepted { reply, effects } = outcome else {
-        panic!("expected Accepted");
-    };
+    let reply = executor.execute(request);
 
-    assert_eq!(effects.len(), 0);
-
-    let Reply::Accepted { per_operation, .. } = reply else {
+    let Reply::Accepted {
+        outcome,
+        per_operation,
+    } = reply
+    else {
         panic!("expected Reply::Accepted");
     };
+    assert_eq!(outcome, AcceptedOutcome::Committed);
     assert_eq!(per_operation.len(), 1);
-    let SubReply::Ok { payload } = per_operation.head() else {
+    let SubReply::Ok(payload) = per_operation.head() else {
         panic!("expected SubReply::Ok");
     };
     assert!(matches!(payload, CounterReply::TrackingReset));
 }
 
 #[test]
-fn outcome_reply_accessor_works_for_every_variant() {
-    // Build all three outcome variants and assert reply() reads them.
-    let mut acceptor = Executor::new(
-        CounterLowering::new(),
-        CounterEngine::new(),
-        ObserverSet::no_op(),
-    );
-    let accepted = acceptor.execute(CounterOperation::Increment(1).into_request());
-    assert!(matches!(accepted.reply(), Reply::Accepted { .. }));
-    assert!(accepted.is_accepted());
-
-    let mut lowering_rejector = Executor::new(
-        CounterLowering::new(),
-        CounterEngine::new(),
-        ObserverSet::no_op(),
-    );
-    let lowering_rejected =
-        lowering_rejector.execute(CounterOperation::Increment(0).into_request());
-    assert!(matches!(
-        lowering_rejected.reply(),
-        Reply::Rejected {
-            reason: RequestRejectionReason::Internal,
-        },
-    ));
-    assert!(lowering_rejected.is_rejected());
-
-    let mut engine_rejector = Executor::new(
+fn kernel_rejection_does_not_carry_contract_reply() {
+    // Engine rejection produces a kernel-shaped reply with no
+    // per-operation contract-reply detail -- the typed engine cause
+    // stays daemon-side, not on the wire.
+    let mut executor = Executor::new(
         CounterLowering::new(),
         CounterEngine::with_poison(),
         ObserverSet::no_op(),
     );
-    let engine_rejected = engine_rejector.execute(CounterOperation::Increment(1).into_request());
-    assert!(matches!(
-        engine_rejected.reply(),
-        Reply::Rejected {
-            reason: RequestRejectionReason::Internal,
-        },
-    ));
-    assert!(engine_rejected.is_rejected());
+
+    let request = CounterOperation::Increment(2).into_request();
+    let reply = executor.execute(request);
+
+    match reply {
+        Reply::Rejected { reason } => {
+            assert_eq!(reason, RequestRejectionReason::Internal);
+        }
+        Reply::Accepted { .. } => panic!("engine failure must produce Reply::Rejected"),
+    }
 }
 
 // Test-only adapter so `Arc<RecordingChannel>` can be passed as a

@@ -1,7 +1,7 @@
 ## signal-executor Architecture
 
 `signal-executor` owns the shared library a triad daemon uses to
-translate its public contract operations into Sema operations,
+translate its public contract operations into executable Sema commands,
 commit them atomically through a `SemaEngine`, correlate each
 Sema effect back to a per-operation reply, and publish operation /
 effect events to subscribed observers.
@@ -12,11 +12,11 @@ two impls: a `Lowering` over its contract operation enum, and a
 composes those two impls into a uniform `execute(Request) ->
 ExecutorOutcome` pipeline.
 
-The design that introduced this crate is documented in the primary
-workspace at
-`reports/designer/243-reply-naming-observer-hook-executor-trait.md`
-§3. The broader migration spec lives at
-`reports/designer/241-signal-architecture-migration-guide.md`.
+Public contracts speak contract-local verbs. Lowering is the daemon's
+boundary from that public vocabulary into commands its Sema engine can
+execute. `signal-sema::SemaOperation` remains the shared operation
+class vocabulary for effects and observation; it is not the executable
+command shape.
 
 ## Constraints
 
@@ -29,9 +29,9 @@ workspace at
 - `signal-executor` depends on `signal-frame` (for `Request`,
   `Reply`, `SubReply`, `AcceptedOutcome`, `NonEmpty`,
   `RequestRejectionReason`, `RequestPayload`) and on `signal-sema`
-  (for `SemaOperation`). It does not depend on `sema-engine` the
-  engine; daemons reach their actual engine through the
-  `SemaEngine` trait this crate defines.
+  (for `SemaOperation` effect classification). It does not depend on
+  `sema-engine` the engine; daemons reach their actual engine through
+  the `SemaEngine` trait this crate defines.
 - The crate is synchronous. Daemons that drive the executor wire it
   into whatever async runtime they already use.
 - Public types and methods carry typed errors via `thiserror` per
@@ -43,11 +43,11 @@ workspace at
 
 | Item | Shape | Use |
 |---|---|---|
-| `Lowering` | trait | per-daemon contract-to-Sema bridge; three associated types (`Operation`, `Reply`, `RejectionReason`) and two methods (`lower`, `reply_from_effects`). |
-| `SemaEngine` | trait | atomic commit point with one associated type (`Error`) and one method (`execute_atomic`). |
+| `Lowering` | trait | per-daemon contract-to-command bridge; three associated types (`Operation`, `Reply`, `Command`) and two methods (`lower`, `reply_from_effects`). |
+| `SemaEngine` | trait | atomic commit point with two associated types (`Command`, `Error`) and one method (`execute_atomic`). |
 | `Executor<L, S>` | struct | composes `L: Lowering` and `S: SemaEngine` over a shared `ObserverSet`; exposes `execute(Request<L::Operation>) -> ExecutorOutcome<L, S>`. |
-| `ExecutorOutcome<L, S>` | enum | three terminal variants: `Accepted { reply, effects }`, `LoweringRejected { reply, reason }`, `EngineRejected { reply, error }`. Borrow `reply()` for the wire shape; `is_accepted()` / `is_rejected()` for branching. |
-| `SemaEffect` | struct | what happened after a `SemaOperation` committed: `operation` plus `outcome: SemaEffectOutcome`. |
+| `ExecutorOutcome<L, S>` | enum | three terminal variants: `Accepted { reply, effects }`, `LoweringRejected { reply, failed_at }`, `EngineRejected { reply, error }`. Borrow `reply()` for the wire shape; `is_accepted()` / `is_rejected()` for branching. |
+| `SemaEffect` | struct | what happened after an executable command committed: broad `operation: SemaOperation` plus `outcome: SemaEffectOutcome`. |
 | `SemaEffectOutcome` | enum | closed variant set keyed off operation class: `Wrote { rows_written, rows_matched }`, `Read { rows_read }`, `Stream { subscription_token }`, `Validated { predicate_held }`. |
 | `ObserverChannel<Operation>` | trait | per-channel publish surface the executor calls. Two methods: `publish_operation_received(&Operation)` and `publish_sema_effect_emitted(&SemaEffect)`. |
 | `ObserverSet<Operation>` | struct | concrete observer bookkeeping wrapping an `ObserverChannel` in `Arc`; clones share the underlying channel. `ObserverSet::no_op()` for daemons that have not yet wired observation. |
@@ -60,8 +60,8 @@ workspace at
 `SemaEngine::execute_atomic` is the **single binding point** for
 state effects. The trait guarantees:
 
-- either every operation in the input `Vec<SemaOperation>` commits,
-  in which case the engine returns one `SemaEffect` per operation
+- either every command in the input `Vec<Self::Command>` commits,
+  in which case the engine returns one `SemaEffect` per command
   in request order, or
 - no operation commits, and the engine returns `Err(Self::Error)`.
 
@@ -88,11 +88,11 @@ Three terminal paths, one terminal variant per path:
 flowchart TD
     request["Request&lt;L::Operation&gt;"]
     lower["lower() for each op"]
-    engine["execute_atomic(ops)"]
+    engine["execute_atomic(commands)"]
     map["reply_from_effects() for each op"]
 
     accepted["ExecutorOutcome::Accepted<br/>{ reply, effects }"]
-    lrej["ExecutorOutcome::LoweringRejected<br/>{ reply, reason }"]
+    lrej["ExecutorOutcome::LoweringRejected<br/>{ reply, failed_at }"]
     erej["ExecutorOutcome::EngineRejected<br/>{ reply, error }"]
 
     request --> lower
@@ -106,7 +106,7 @@ flowchart TD
 | Path | When | Wire `Reply` | Daemon-side carry |
 |---|---|---|---|
 | `Accepted` | Every operation lowered and the engine committed atomically. | `Reply::Accepted { outcome: Completed, per_operation: NonEmpty<SubReply::Ok { payload }> }`. | `effects: Vec<SemaEffect>` for post-execution use (logs, metrics, derived events). |
-| `LoweringRejected` | A `Lowering::lower` call returned `Err`. The engine was not called; no state effect occurred. | `Reply::Rejected { reason: RequestRejectionReason::Internal }`. | `reason: L::RejectionReason` -- the daemon's typed domain rejection. |
+| `LoweringRejected` | A `Lowering::lower` call returned `Err(reply)`. The engine was not called; no state effect occurred. | `Reply::Accepted { outcome: Aborted { failed_at, reason: DomainRejection }, per_operation: ... }`; earlier operations are `Invalidated`, the failed operation carries `SubReply::Failed { detail: Some(reply) }`, later operations are `Skipped`. | `failed_at` -- the index of the domain-rejected operation. |
 | `EngineRejected` | `SemaEngine::execute_atomic` returned `Err`. No state effect committed (atomicity contract). | `Reply::Rejected { reason: RequestRejectionReason::Internal }`. | `error: S::Error` -- the engine's typed failure cause. |
 
 Post-commit publication failures (the observer set's
@@ -235,17 +235,18 @@ hands the impl to the executor.
 ```text
 src/lib.rs       module entry and re-exports
 src/effect.rs    SemaEffect and SemaEffectOutcome with witness predicate
-src/engine.rs    SemaEngine trait (associated Error type, execute_atomic)
+src/engine.rs    SemaEngine trait (associated Command + Error types,
+                 execute_atomic)
 src/error.rs     crate-boundary Error enum (reserved input-shape variants)
 src/executor.rs  Executor struct and ExecutorOutcome enum
-src/lowering.rs  Lowering trait (Operation, Reply, RejectionReason)
+src/lowering.rs  Lowering trait (Operation, Reply, Command)
 src/observer.rs  ObserverChannel trait, ObserverSet struct,
                  RecordingChannel + RecordedEvent for tests
 
-tests/counter/mod.rs  Counter mock: operation/reply/rejection enums,
-                      Lowering impl, SemaEngine impl (canned effects
-                      plus poisoned variant for engine-rejection
-                      tests)
+tests/counter/mod.rs  Counter mock: operation/reply/command enums,
+                      Lowering impl, SemaEngine impl (typed commands,
+                      canned effects, plus poisoned variant for
+                      engine-rejection tests)
 tests/effect.rs       Unit tests for SemaEffect::is_write_commit
                       across all operation classes and outcomes
 tests/observer.rs     Unit tests for ObserverSet, RecordingChannel,
@@ -259,12 +260,6 @@ tests/round_trip.rs   End-to-end tests: single-op accepted, multi-op
 
 ## See also
 
-- `~/primary/reports/designer/243-reply-naming-observer-hook-executor-trait.md`
-  -- the design this crate implements.
-- `~/primary/reports/designer/241-signal-architecture-migration-guide.md`
-  -- the broader migration spec.
-- `~/primary/reports/designer/242-hole-finding-spirit-migration.md`
-  -- the motivating hole (hole 5).
 - `/git/github.com/LiGoldragon/signal-frame/ARCHITECTURE.md`
   -- the frame mechanics this crate consumes (`Request`, `Reply`,
   `NonEmpty`, `RequestPayload`).
