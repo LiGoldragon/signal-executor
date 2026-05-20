@@ -40,6 +40,10 @@ own `Command` and `ComponentEffect` records.
   typed engine error.
 - The typed engine error is retained daemon-side through
   `Executor::take_last_engine_error`.
+- `Executor` is a per-request or sequential-use value. If a daemon
+  reuses one `Executor` instance, it must call
+  `take_last_engine_error` before executing another request; the next
+  engine rejection replaces the stored typed error.
 - Observer publication never rolls back committed state.
 
 ## Public Surface
