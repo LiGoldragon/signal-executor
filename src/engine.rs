@@ -1,19 +1,9 @@
-//! [`SemaEngine`]: atomic commit point for executable commands.
+//! SemaEngine: atomic commit point for Sema operations.
 
 use crate::effect::SemaEffect;
+use signal_sema::SemaOperation;
 
-/// Atomic commit point for daemon-specific executable commands.
 pub trait SemaEngine {
-    /// Command accepted by the daemon's concrete state engine.
-    type Command;
-
-    /// Typed engine error kept daemon-side.
     type Error;
-
-    /// Commit `commands` atomically. Returns one effect per command in
-    /// request order on success, or a typed engine error on failure.
-    fn execute_atomic(
-        &mut self,
-        commands: Vec<Self::Command>,
-    ) -> Result<Vec<SemaEffect>, Self::Error>;
+    fn execute_atomic(&mut self, ops: Vec<SemaOperation>) -> Result<Vec<SemaEffect>, Self::Error>;
 }
