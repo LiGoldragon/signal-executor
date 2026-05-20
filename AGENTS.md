@@ -4,7 +4,7 @@ Read `/home/li/primary/AGENTS.md` first.
 
 This repository is a library crate. It provides the shared executor
 machinery a triad daemon uses to translate its public contract
-operations into executable Sema commands, with
+operations into component-local executable commands, with
 atomicity, per-operation reply mapping, and observer publication.
 
 It is not a daemon, not an actor runtime, and not a component
@@ -29,10 +29,10 @@ contract; it has no public wire surface of its own.
   `Lowering::Operation`, `Lowering::Reply`, and
   `Lowering::Command`.
 - Do not depend on `sema-engine` directly. The actual engine that
-  commits executable commands is reached through the `SemaEngine`
+  commits executable commands is reached through the `CommandExecutor`
   trait, which daemons implement when wiring their backend.
 - Add a test for every public type and trait method. Round-trip
   the orchestration through the mock `Lowering` + mock
-  `SemaEngine`; do not prove behavior by reading source.
+  `CommandExecutor`; do not prove behavior by reading source.
 - No flags on any binary that may grow under `examples/`. NOTA in,
   NOTA out.

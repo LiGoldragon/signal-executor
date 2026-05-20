@@ -1,11 +1,11 @@
 //! Executor: orchestrates contract operation to component command execution.
 
 use signal_frame::{
-    AcceptedOutcome, BatchFailureReason, CommitStatus, NonEmpty, OperationFailureReason, Reply,
-    Request, RetryClassification, SubReply,
+    AcceptedOutcome, BatchErrorClassification, BatchFailureReason, CommitStatus, NonEmpty,
+    OperationFailureReason, Reply, Request, RetryClassification, SubReply,
 };
 
-use crate::engine::{BatchErrorClassification, CommandExecutor};
+use crate::engine::CommandExecutor;
 use crate::lowering::{BatchPlan, CommandEffect, Lowering};
 use crate::observer::ObserverSet;
 

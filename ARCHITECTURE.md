@@ -49,7 +49,7 @@ own `Command` and `ComponentEffect` records.
 | `Lowering` | trait | Daemon-owned bridge from public contract `Operation` to local executable `Command`, and from committed `OperationEffects` to contract `Reply`. |
 | `OperationPlan<Command>` | struct | Non-empty command plan for one source operation. |
 | `BatchPlan<Command>` | struct | Non-empty batch of operation plans; preserves source-operation grouping. |
-| `BatchErrorClassification` | trait | Converts a component executor error into wire-safe batch-abort metadata without carrying the typed error on the wire. |
+| `BatchErrorClassification` | `signal-frame` trait, re-exported | Converts a component executor error into wire-safe batch-abort metadata without carrying the typed error on the wire. |
 | `CommandExecutor` | trait | Component-local atomic commit point over `BatchPlan<Command>`; its error type implements `BatchErrorClassification`. |
 | `CommandEffect<Command, ComponentEffect>` | struct | One executed local command plus the local effect it produced. |
 | `OperationEffects<Command, ComponentEffect>` | struct | Non-empty command effects for one source operation. |

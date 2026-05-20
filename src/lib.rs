@@ -36,7 +36,7 @@ pub mod lowering;
 pub mod observer;
 
 pub use bridge::{FrameObserverBridge, ObserverDelivery};
-pub use engine::{BatchErrorClassification, CommandExecutor};
+pub use engine::CommandExecutor;
 pub use error::Error;
 pub use executor::Executor;
 pub use lowering::{
@@ -45,4 +45,4 @@ pub use lowering::{
 pub use observer::{ObserverChannel, ObserverSet, RecordedEvent, RecordingChannel};
 
 // Re-export the projection/observable-set traits for daemon convenience.
-pub use signal_frame::{ObservableSet, ObservationProjection};
+pub use signal_frame::{BatchErrorClassification, ObservableSet, ObservationProjection};
