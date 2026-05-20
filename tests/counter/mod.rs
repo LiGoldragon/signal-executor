@@ -13,7 +13,6 @@ pub enum CounterOperation {
     Query,
     ResetTracking,
 }
-
 impl RequestPayload for CounterOperation {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,9 +43,7 @@ impl Lowering for CounterLowering {
             CounterOperation::Increment(magnitude) | CounterOperation::Decrement(magnitude)
                 if *magnitude == 0 =>
             {
-                Err(CounterReply::MagnitudeRejected {
-                    reason: MagnitudeRejectionReason::ZeroMagnitude,
-                })
+                Err(CounterReply::MagnitudeRejected { reason: MagnitudeRejectionReason::ZeroMagnitude })
             }
             CounterOperation::Increment(_) => Ok(vec![SemaOperation::Assert]),
             CounterOperation::Decrement(_) => Ok(vec![SemaOperation::Retract]),
