@@ -30,8 +30,8 @@ use signal_sema::{SemaObservation, SemaOperation, SemaOutcome};
 mod counter;
 
 use counter::{
-    CounterCommand, CounterEffectOutcome, CounterEngine, CounterLowering, CounterOperation,
-    CounterReply, MagnitudeRejectionReason, PoisonError,
+    CounterCommand, CounterEffectOutcome, CounterEngine, CounterEngineFailure, CounterLowering,
+    CounterOperation, CounterReply, MagnitudeRejectionReason,
 };
 
 type CounterCommandEffect = CommandEffect<CounterCommand, CounterEffectOutcome>;
@@ -218,7 +218,7 @@ fn engine_rejection_returns_batch_aborted_reply() {
         outcome,
         AcceptedOutcome::BatchAborted {
             reason: BatchFailureReason::EngineRejected,
-            retry: RetryClassification::Unknown,
+            retry: RetryClassification::NotRetryable,
             commit: CommitStatus::NotCommitted,
         },
     );
@@ -229,12 +229,37 @@ fn engine_rejection_returns_batch_aborted_reply() {
     // last_engine_error stash, retrievable for logs / metrics /
     // supervision but NOT carried on the wire reply.
     let taken = executor.take_last_engine_error();
-    assert_eq!(taken, Some(PoisonError));
+    assert_eq!(taken, Some(CounterEngineFailure::Poisoned));
     // Once taken, the stash is cleared.
     assert!(executor.take_last_engine_error().is_none());
 
     // Engine returned Err so no effects committed -- counter still 0.
     assert_eq!(executor.command_executor().committed_operation_count(), 0);
+}
+
+#[test]
+fn engine_failure_classification_is_projected_to_batch_abort_reply() {
+    let engine = CounterEngine::with_lost_commit_acknowledgement();
+    let mut executor = Executor::new(CounterLowering::new(), engine, ObserverSet::no_op());
+
+    let request = CounterOperation::Increment(1).into_request();
+    let reply = executor.execute(request);
+
+    let Reply::Accepted { outcome, .. } = reply else {
+        panic!("expected accepted-but-batch-aborted reply");
+    };
+    assert_eq!(
+        outcome,
+        AcceptedOutcome::BatchAborted {
+            reason: BatchFailureReason::EngineUnavailable,
+            retry: RetryClassification::Retryable,
+            commit: CommitStatus::Unknown,
+        },
+    );
+    assert_eq!(
+        executor.take_last_engine_error(),
+        Some(CounterEngineFailure::LostCommitAcknowledgement),
+    );
 }
 
 #[test]
@@ -270,7 +295,7 @@ fn multi_operation_engine_rejection_is_all_or_nothing() {
         outcome,
         AcceptedOutcome::BatchAborted {
             reason: BatchFailureReason::EngineRejected,
-            retry: RetryClassification::Unknown,
+            retry: RetryClassification::NotRetryable,
             commit: CommitStatus::NotCommitted,
         },
     );
@@ -418,7 +443,7 @@ fn engine_rejection_does_not_carry_contract_reply() {
                 outcome,
                 AcceptedOutcome::BatchAborted {
                     reason: BatchFailureReason::EngineRejected,
-                    retry: RetryClassification::Unknown,
+                    retry: RetryClassification::NotRetryable,
                     commit: CommitStatus::NotCommitted,
                 },
             );

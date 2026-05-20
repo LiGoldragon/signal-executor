@@ -5,7 +5,7 @@ use signal_frame::{
     Request, RetryClassification, SubReply,
 };
 
-use crate::engine::CommandExecutor;
+use crate::engine::{BatchErrorClassification, CommandExecutor};
 use crate::lowering::{BatchPlan, CommandEffect, Lowering};
 use crate::observer::ObserverSet;
 
@@ -78,8 +78,11 @@ where
         let batch_effects = match self.command_executor.execute_atomic_batch(plan) {
             Ok(effects) => effects,
             Err(error) => {
+                let reason = error.batch_failure_reason();
+                let retry = error.retry_classification();
+                let commit = error.commit_status();
                 self.last_engine_error = Some(error);
-                return batch_aborted_reply(total_operations, BatchFailureReason::EngineRejected);
+                return batch_aborted_reply(total_operations, reason, retry, commit);
             }
         };
 
@@ -150,7 +153,12 @@ fn operation_aborted_reply<P>(
     }
 }
 
-fn batch_aborted_reply<P>(total_operations: usize, reason: BatchFailureReason) -> Reply<P> {
+fn batch_aborted_reply<P>(
+    total_operations: usize,
+    reason: BatchFailureReason,
+    retry: RetryClassification,
+    commit: CommitStatus,
+) -> Reply<P> {
     let per_operation = NonEmpty::try_from_vec(
         (0..total_operations)
             .map(|_| SubReply::Invalidated)
@@ -160,8 +168,8 @@ fn batch_aborted_reply<P>(total_operations: usize, reason: BatchFailureReason) -
     Reply::Accepted {
         outcome: AcceptedOutcome::BatchAborted {
             reason,
-            retry: RetryClassification::Unknown,
-            commit: CommitStatus::NotCommitted,
+            retry,
+            commit,
         },
         per_operation,
     }

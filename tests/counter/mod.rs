@@ -2,10 +2,10 @@
 
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use signal_executor::{
-    BatchEffects, BatchPlan, CommandEffect, CommandExecutor, Lowering, OperationEffects,
-    OperationPlan,
+    BatchEffects, BatchErrorClassification, BatchPlan, CommandEffect, CommandExecutor, Lowering,
+    OperationEffects, OperationPlan,
 };
-use signal_frame::RequestPayload;
+use signal_frame::{BatchFailureReason, CommitStatus, RequestPayload, RetryClassification};
 use signal_sema::{SemaOperation, SemaOutcome, ToSemaOperation, ToSemaOutcome};
 use thiserror::Error;
 
@@ -170,20 +170,26 @@ fn first_read_rows(effects: &OperationEffects<CounterCommand, CounterEffectOutco
 
 pub struct CounterEngine {
     committed: u64,
-    poisoned: bool,
+    failure: Option<CounterEngineFailure>,
 }
 #[allow(dead_code)]
 impl CounterEngine {
     pub fn new() -> Self {
         Self {
             committed: 0,
-            poisoned: false,
+            failure: None,
         }
     }
     pub fn with_poison() -> Self {
         Self {
             committed: 0,
-            poisoned: true,
+            failure: Some(CounterEngineFailure::Poisoned),
+        }
+    }
+    pub fn with_lost_commit_acknowledgement() -> Self {
+        Self {
+            committed: 0,
+            failure: Some(CounterEngineFailure::LostCommitAcknowledgement),
         }
     }
     pub fn committed_operation_count(&self) -> u64 {
@@ -199,13 +205,13 @@ impl Default for CounterEngine {
 impl CommandExecutor for CounterEngine {
     type Command = CounterCommand;
     type ComponentEffect = CounterEffectOutcome;
-    type Error = PoisonError;
+    type Error = CounterEngineFailure;
     fn execute_atomic_batch(
         &mut self,
         plan: BatchPlan<Self::Command>,
     ) -> Result<BatchEffects<Self::Command, Self::ComponentEffect>, Self::Error> {
-        if self.poisoned {
-            return Err(PoisonError);
+        if let Some(failure) = self.failure {
+            return Err(failure);
         }
         let (head_plan, tail_plans) = plan.into_operations().into_head_and_tail();
         let head_effects = self.execute_operation_plan(head_plan);
@@ -256,5 +262,32 @@ impl CounterEngine {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
-#[error("engine poisoned for test")]
-pub struct PoisonError;
+pub enum CounterEngineFailure {
+    #[error("engine poisoned for test")]
+    Poisoned,
+    #[error("engine lost commit acknowledgement for test")]
+    LostCommitAcknowledgement,
+}
+
+impl BatchErrorClassification for CounterEngineFailure {
+    fn batch_failure_reason(&self) -> BatchFailureReason {
+        match self {
+            Self::Poisoned => BatchFailureReason::EngineRejected,
+            Self::LostCommitAcknowledgement => BatchFailureReason::EngineUnavailable,
+        }
+    }
+
+    fn retry_classification(&self) -> RetryClassification {
+        match self {
+            Self::Poisoned => RetryClassification::NotRetryable,
+            Self::LostCommitAcknowledgement => RetryClassification::Retryable,
+        }
+    }
+
+    fn commit_status(&self) -> CommitStatus {
+        match self {
+            Self::Poisoned => CommitStatus::NotCommitted,
+            Self::LostCommitAcknowledgement => CommitStatus::Unknown,
+        }
+    }
+}

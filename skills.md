@@ -6,8 +6,8 @@ This repository follows the workspace skills in
 ## Local Discipline
 
 - Keep the crate small and trait-shaped. The two real types are
-  the `Lowering` trait, the `SemaEngine` trait, and the
-  `Executor<Lowering, SemaEngine>` struct that composes them.
+  the `Lowering` trait, the `CommandExecutor` trait, and the
+  `Executor<Lowering, CommandExecutor>` struct that composes them.
 - Do not add runtime dependencies (no `tokio`, no actor
   runtime). The executor is synchronous; daemon code wires it
   into whatever runtime the daemon already runs.

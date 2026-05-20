@@ -34,6 +34,10 @@ own `Command` and `ComponentEffect` records.
 - `signal-executor` does not expose a `SemaEffect` type.
 - Engine failures are represented on the wire as an accepted
   batch-abort reply, not as `Reply::Rejected`.
+- Engine failures classify themselves through
+  `BatchErrorClassification`; the wire reply carries the failure
+  reason, retry classification, and commit status supplied by the
+  typed engine error.
 - The typed engine error is retained daemon-side through
   `Executor::take_last_engine_error`.
 - Observer publication never rolls back committed state.
@@ -45,7 +49,8 @@ own `Command` and `ComponentEffect` records.
 | `Lowering` | trait | Daemon-owned bridge from public contract `Operation` to local executable `Command`, and from committed `OperationEffects` to contract `Reply`. |
 | `OperationPlan<Command>` | struct | Non-empty command plan for one source operation. |
 | `BatchPlan<Command>` | struct | Non-empty batch of operation plans; preserves source-operation grouping. |
-| `CommandExecutor` | trait | Component-local atomic commit point over `BatchPlan<Command>`. |
+| `BatchErrorClassification` | trait | Converts a component executor error into wire-safe batch-abort metadata without carrying the typed error on the wire. |
+| `CommandExecutor` | trait | Component-local atomic commit point over `BatchPlan<Command>`; its error type implements `BatchErrorClassification`. |
 | `CommandEffect<Command, ComponentEffect>` | struct | One executed local command plus the local effect it produced. |
 | `OperationEffects<Command, ComponentEffect>` | struct | Non-empty command effects for one source operation. |
 | `BatchEffects<Command, ComponentEffect>` | struct | Non-empty operation effects for the whole request. |
@@ -110,7 +115,7 @@ return shape.
 |---|---|---|---|
 | Committed | Every operation lowered and the command executor committed atomically. | `Reply::Accepted { outcome: Committed, per_operation: Ok(...) }` | Observer events are published after commit. |
 | Domain rejection | `Lowering::lower` rejected one source operation. | `Reply::Accepted { outcome: OperationAborted { failed_at, reason: DomainRejection }, ... }` | No command executor call; no effect events. |
-| Engine rejection | `CommandExecutor::execute_atomic_batch` returned `Err`. | `Reply::Accepted { outcome: BatchAborted { reason: EngineRejected, commit: NotCommitted, ... }, per_operation: Invalidated... }` | Typed engine error is stored in `Executor::take_last_engine_error`. |
+| Engine rejection | `CommandExecutor::execute_atomic_batch` returned `Err`. | `Reply::Accepted { outcome: BatchAborted { reason, retry, commit }, per_operation: Invalidated... }` using the engine error's `BatchErrorClassification`. | Typed engine error is stored in `Executor::take_last_engine_error`. |
 
 `Reply::Rejected` remains a kernel/frame rejection shape. It is not
 used for component executor failure because the frame was accepted and
