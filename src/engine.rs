@@ -1,12 +1,11 @@
-//! SemaEngine: atomic commit point for component-local commands.
+//! CommandExecutor: atomic commit point for component-local commands.
 
-use crate::effect::SemaEffect;
-
-pub trait SemaEngine {
+pub trait CommandExecutor {
     type Command;
+    type Effect;
     type Error;
     fn execute_atomic(
         &mut self,
         commands: Vec<Self::Command>,
-    ) -> Result<Vec<SemaEffect>, Self::Error>;
+    ) -> Result<Vec<Self::Effect>, Self::Error>;
 }

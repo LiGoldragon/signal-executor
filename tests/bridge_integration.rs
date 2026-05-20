@@ -4,14 +4,16 @@ use std::sync::{Arc, Mutex};
 
 use signal_executor::{
     Executor, FrameObserverBridge, ObservableSet, ObservationProjection, ObserverDelivery,
-    ObserverSet, SemaEffect, SemaEffectOutcome,
+    ObserverSet,
 };
 use signal_frame::{Reply, RequestPayload, SubscriptionTokenInner};
-use signal_sema::SemaOperation;
 
 mod counter;
 
-use counter::{CounterEngine, CounterLowering, CounterOperation, CounterReply};
+use counter::{
+    CounterEffect, CounterEffectOutcome, CounterEngine, CounterLowering, CounterOperation,
+    CounterReply,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct OperationReceived {
@@ -78,7 +80,7 @@ struct CounterProjection;
 
 impl ObservationProjection for CounterProjection {
     type Operation = CounterOperation;
-    type Effect = SemaEffect;
+    type Effect = CounterEffect;
     type OperationEvent = OperationReceived;
     type EffectEvent = SemaEffectEmitted;
 
@@ -94,9 +96,9 @@ impl ObservationProjection for CounterProjection {
         }
     }
 
-    fn effect_event(&self, effect: &SemaEffect) -> SemaEffectEmitted {
+    fn effect_event(&self, effect: &CounterEffect) -> SemaEffectEmitted {
         SemaEffectEmitted {
-            effect_label: format!("{:?}", effect.operation),
+            effect_label: format!("{:?}", effect.sema_operation),
         }
     }
 }
@@ -170,4 +172,4 @@ fn frame_observer_bridge_delivers_projected_events_in_order() {
 }
 
 #[allow(dead_code)]
-fn _type_use(_operation: SemaOperation, _outcome: SemaEffectOutcome, _reply: CounterReply) {}
+fn _type_use(_outcome: CounterEffectOutcome, _reply: CounterReply) {}

@@ -2,7 +2,7 @@
 //!
 //! The Counter mock implements `Lowering` for a four-operation channel
 //! (`Increment`, `Decrement`, `Query`, `ResetTracking`) backed by a
-//! mock `SemaEngine` that returns canned effects. The tests cover:
+//! mock `CommandExecutor` that returns canned effects. The tests cover:
 //!
 //! - Single-operation accepted round trip.
 //! - Multi-operation accepted round trip (Increment + Query + Decrement;
@@ -18,8 +18,8 @@
 //!   ran-but-not-authoritative and lowered-but-not-committed cases.
 
 use signal_executor::{
-    Executor, Lowering, ObserverSet, RecordedEvent, RecordingChannel, SemaEffect,
-    SemaEffectOutcome, SemaEngine,
+    CommandExecutor, Executor, Lowering, ObserverSet, RecordedEvent, RecordingChannel, SemaEffect,
+    SemaEffectOutcome,
 };
 use signal_frame::{
     AcceptedOutcome, BatchFailureReason, OperationFailureReason, Reply, RequestBuilder,
@@ -30,8 +30,8 @@ use signal_sema::SemaOperation;
 mod counter;
 
 use counter::{
-    CounterEngine, CounterLowering, CounterOperation, CounterReply, MagnitudeRejectionReason,
-    PoisonError,
+    CounterEffect, CounterEffectOutcome, CounterEngine, CounterLowering, CounterOperation,
+    CounterReply, MagnitudeRejectionReason, PoisonError,
 };
 
 #[test]
@@ -146,7 +146,7 @@ fn single_operation_lowering_rejection_returns_typed_failed_subreply() {
     ));
 
     // The engine never saw a call; its committed-operation counter is 0.
-    assert_eq!(executor.sema_engine().committed_operation_count(), 0);
+    assert_eq!(executor.command_executor().committed_operation_count(), 0);
 }
 
 #[test]
@@ -194,7 +194,7 @@ fn multi_operation_lowering_rejection_invalidates_skips_and_fails() {
         },
     ));
     assert!(matches!(replies[2], SubReply::Skipped));
-    assert_eq!(executor.sema_engine().committed_operation_count(), 0);
+    assert_eq!(executor.command_executor().committed_operation_count(), 0);
 }
 
 #[test]
@@ -230,7 +230,7 @@ fn engine_rejection_returns_batch_aborted_reply() {
     assert!(executor.take_last_engine_error().is_none());
 
     // Engine returned Err so no effects committed -- counter still 0.
-    assert_eq!(executor.sema_engine().committed_operation_count(), 0);
+    assert_eq!(executor.command_executor().committed_operation_count(), 0);
 }
 
 #[test]
@@ -274,12 +274,12 @@ fn multi_operation_engine_rejection_is_all_or_nothing() {
             .iter()
             .all(|reply| matches!(reply, SubReply::Invalidated)),
     );
-    assert_eq!(executor.sema_engine().committed_operation_count(), 0);
+    assert_eq!(executor.command_executor().committed_operation_count(), 0);
 }
 
 #[test]
 fn observer_publication_order_accepted() {
-    let recording = std::sync::Arc::new(RecordingChannel::<CounterOperation>::new());
+    let recording = std::sync::Arc::new(RecordingChannel::<CounterOperation, CounterEffect>::new());
     let observers = ObserverSet::new(ArcChannel(recording.clone()));
 
     let mut executor = Executor::new(CounterLowering::new(), CounterEngine::new(), observers);
@@ -308,15 +308,15 @@ fn observer_publication_order_accepted() {
     ));
     assert!(matches!(
         events[2],
-        RecordedEvent::SemaEffectEmitted(SemaEffect {
-            operation: SemaOperation::Assert,
+        RecordedEvent::EffectEmitted(CounterEffect {
+            sema_operation: SemaOperation::Assert,
             ..
         }),
     ));
     assert!(matches!(
         events[3],
-        RecordedEvent::SemaEffectEmitted(SemaEffect {
-            operation: SemaOperation::Retract,
+        RecordedEvent::EffectEmitted(CounterEffect {
+            sema_operation: SemaOperation::Retract,
             ..
         }),
     ));
@@ -324,7 +324,7 @@ fn observer_publication_order_accepted() {
 
 #[test]
 fn observer_receives_operations_even_on_lowering_rejection() {
-    let recording = std::sync::Arc::new(RecordingChannel::<CounterOperation>::new());
+    let recording = std::sync::Arc::new(RecordingChannel::<CounterOperation, CounterEffect>::new());
     let observers = ObserverSet::new(ArcChannel(recording.clone()));
 
     let mut executor = Executor::new(CounterLowering::new(), CounterEngine::new(), observers);
@@ -354,7 +354,7 @@ fn observer_receives_operations_even_on_lowering_rejection() {
     assert!(
         events
             .iter()
-            .all(|event| !matches!(event, RecordedEvent::SemaEffectEmitted(_))),
+            .all(|event| !matches!(event, RecordedEvent::EffectEmitted(_))),
         "no effects should be emitted on lowering rejection",
     );
 }
@@ -385,7 +385,7 @@ fn reset_tracking_lowers_to_typed_command() {
         panic!("expected SubReply::Ok");
     };
     assert!(matches!(payload, CounterReply::TrackingReset));
-    assert_eq!(executor.sema_engine().committed_operation_count(), 1);
+    assert_eq!(executor.command_executor().committed_operation_count(), 1);
 }
 
 #[test]
@@ -420,18 +420,18 @@ fn engine_rejection_does_not_carry_contract_reply() {
 
 // Test-only adapter so `Arc<RecordingChannel>` can be passed as a
 // channel (impl ObserverChannel only over the owned channel value).
-struct ArcChannel<Operation: Clone + Send + Sync + 'static>(
-    std::sync::Arc<RecordingChannel<Operation>>,
+struct ArcChannel<Operation: Clone + Send + Sync + 'static, Effect: Clone + Send + Sync + 'static>(
+    std::sync::Arc<RecordingChannel<Operation, Effect>>,
 );
 
-impl<Operation: Clone + Send + Sync + 'static> signal_executor::ObserverChannel<Operation>
-    for ArcChannel<Operation>
+impl<Operation: Clone + Send + Sync + 'static, Effect: Clone + Send + Sync + 'static>
+    signal_executor::ObserverChannel<Operation, Effect> for ArcChannel<Operation, Effect>
 {
     fn publish_operation_received(&self, operation: &Operation) {
         self.0.publish_operation_received(operation);
     }
-    fn publish_sema_effect_emitted(&self, effect: &SemaEffect) {
-        self.0.publish_sema_effect_emitted(effect);
+    fn publish_effect_emitted(&self, effect: &Effect) {
+        self.0.publish_effect_emitted(effect);
     }
 }
 
@@ -439,8 +439,10 @@ impl<Operation: Clone + Send + Sync + 'static> signal_executor::ObserverChannel<
 #[allow(dead_code)]
 fn _type_uses(
     _lower: impl Lowering,
-    _engine: impl SemaEngine,
+    _engine: impl CommandExecutor,
     _effect: SemaEffect,
     _outcome: SemaEffectOutcome,
+    _counter_effect: CounterEffect,
+    _counter_outcome: CounterEffectOutcome,
 ) {
 }

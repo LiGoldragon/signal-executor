@@ -2,8 +2,6 @@
 
 use signal_frame::{NonEmpty, RequestPayload};
 
-use crate::effect::SemaEffect;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OperationPlan<Command> {
     commands: NonEmpty<Command>,
@@ -58,6 +56,7 @@ pub trait Lowering {
     type Operation: RequestPayload;
     type Reply;
     type Command;
+    type Effect;
 
     fn lower(
         &self,
@@ -67,6 +66,6 @@ pub trait Lowering {
     fn reply_from_effects(
         &self,
         operation: &Self::Operation,
-        effects: &[SemaEffect],
+        effects: &[Self::Effect],
     ) -> Self::Reply;
 }

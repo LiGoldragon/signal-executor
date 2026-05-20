@@ -1,33 +1,37 @@
-//! Executor: orchestrates contract-to-Sema execution per /246.
+//! Executor: orchestrates contract operation to component command execution.
 
 use signal_frame::{
     AcceptedOutcome, BatchFailureReason, NonEmpty, OperationFailureReason, Reply, Request, SubReply,
 };
 
-use crate::engine::SemaEngine;
+use crate::engine::CommandExecutor;
 use crate::lowering::Lowering;
 use crate::observer::ObserverSet;
 
 pub struct Executor<L, S>
 where
     L: Lowering,
-    S: SemaEngine<Command = L::Command>,
+    S: CommandExecutor<Command = L::Command, Effect = L::Effect>,
 {
     lowering: L,
-    sema_engine: S,
-    observers: ObserverSet<L::Operation>,
+    command_executor: S,
+    observers: ObserverSet<L::Operation, L::Effect>,
     last_engine_error: Option<S::Error>,
 }
 
 impl<L, S> Executor<L, S>
 where
     L: Lowering,
-    S: SemaEngine<Command = L::Command>,
+    S: CommandExecutor<Command = L::Command, Effect = L::Effect>,
 {
-    pub fn new(lowering: L, sema_engine: S, observers: ObserverSet<L::Operation>) -> Self {
+    pub fn new(
+        lowering: L,
+        command_executor: S,
+        observers: ObserverSet<L::Operation, L::Effect>,
+    ) -> Self {
         Self {
             lowering,
-            sema_engine,
+            command_executor,
             observers,
             last_engine_error: None,
         }
@@ -36,10 +40,10 @@ where
     pub fn lowering(&self) -> &L {
         &self.lowering
     }
-    pub fn sema_engine(&self) -> &S {
-        &self.sema_engine
+    pub fn command_executor(&self) -> &S {
+        &self.command_executor
     }
-    pub fn observers(&self) -> &ObserverSet<L::Operation> {
+    pub fn observers(&self) -> &ObserverSet<L::Operation, L::Effect> {
         &self.observers
     }
     pub fn take_last_engine_error(&mut self) -> Option<S::Error> {
@@ -70,7 +74,7 @@ where
             }
         }
 
-        let effects = match self.sema_engine.execute_atomic(commands) {
+        let effects = match self.command_executor.execute_atomic(commands) {
             Ok(effects) => effects,
             Err(error) => {
                 self.last_engine_error = Some(error);
@@ -79,7 +83,7 @@ where
         };
 
         for effect in &effects {
-            self.observers.publish_sema_effect_emitted(effect);
+            self.observers.publish_effect_emitted(effect);
         }
 
         let (head_operation, tail_operations) = request.payloads.into_head_and_tail();

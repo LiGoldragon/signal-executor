@@ -1,7 +1,7 @@
 //! [`FrameObserverBridge`]: the crate-boundary projection bridge.
 //!
 //! Per /246 §3 + /141 hole 3: the executor publishes **raw execution
-//! facts** (`Operation`, `SemaEffect`); the macro-generated
+//! facts** (`Operation`, component-local `Effect`); the macro-generated
 //! `<Channel>ObserverSet` publishes **channel event records**
 //! (`OperationEvent`, `EffectEvent`). Something has to project raw
 //! facts into channel records.
@@ -18,7 +18,7 @@
 //! 3. An [`ObserverDelivery`] impl -- writes events to subscriber
 //!    sockets. Daemon-supplied.
 //!
-//! The bridge impls [`ObserverChannel<Operation>`] so it plugs
+//! The bridge impls [`ObserverChannel<Operation, Effect>`] so it plugs
 //! directly into [`Executor::observers`](crate::Executor::observers).
 //! When the executor publishes a raw fact, the bridge projects it
 //! through the projection, asks the observer set to fan out to
@@ -32,7 +32,6 @@
 
 use signal_frame::{ObservableSet, ObservationProjection};
 
-use crate::effect::SemaEffect;
 use crate::observer::ObserverChannel;
 
 /// Daemon-supplied callback that ships an event to a subscriber's
@@ -81,7 +80,7 @@ pub struct FrameObserverBridge<Projection, ObserverSetImpl, Delivery> {
 impl<Projection, ObserverSetImpl, Delivery>
     FrameObserverBridge<Projection, ObserverSetImpl, Delivery>
 where
-    Projection: ObservationProjection<Effect = SemaEffect>,
+    Projection: ObservationProjection,
     ObserverSetImpl: ObservableSet<
             OperationEvent = Projection::OperationEvent,
             EffectEvent = Projection::EffectEvent,
@@ -123,10 +122,11 @@ where
     }
 }
 
-impl<Projection, ObserverSetImpl, Delivery> ObserverChannel<Projection::Operation>
+impl<Projection, ObserverSetImpl, Delivery>
+    ObserverChannel<Projection::Operation, Projection::Effect>
     for FrameObserverBridge<Projection, ObserverSetImpl, Delivery>
 where
-    Projection: ObservationProjection<Effect = SemaEffect>,
+    Projection: ObservationProjection,
     ObserverSetImpl: ObservableSet<
             OperationEvent = Projection::OperationEvent,
             EffectEvent = Projection::EffectEvent,
@@ -146,7 +146,7 @@ where
             });
     }
 
-    fn publish_sema_effect_emitted(&self, effect: &SemaEffect) {
+    fn publish_effect_emitted(&self, effect: &Projection::Effect) {
         let event = self.projection.effect_event(effect);
         self.observer_set
             .publish_effect_emitted(&event, |token, projected_event| {

@@ -2,8 +2,8 @@
 //!
 //! `signal-executor` is the shared library a triad daemon uses to
 //! translate its public contract operations into component-local
-//! commands, execute them atomically through a [`SemaEngine`], correlate
-//! each Sema effect back to a per-operation reply, and publish operation
+//! commands, execute them atomically through a [`CommandExecutor`], correlate
+//! each component-local effect back to a per-operation reply, and publish operation
 //! / effect events to subscribed observers.
 //!
 //! The crate is **library only**. It owns no runtime, no socket
@@ -18,7 +18,7 @@
 //!
 //! Per /246 §3: the [`FrameObserverBridge`] composes three pieces
 //! (`ObservationProjection` + `ObservableSet` +
-//! [`ObserverDelivery`]) into an [`ObserverChannel<Operation>`]
+//! [`ObserverDelivery`]) into an [`ObserverChannel<Operation, Effect>`]
 //! that the executor publishes through. The traits live in
 //! signal-frame so signal-frame's macro can emit the per-channel
 //! impls without depending on signal-executor; this crate composes
@@ -37,11 +37,16 @@ pub mod observer;
 
 pub use bridge::{FrameObserverBridge, ObserverDelivery};
 pub use effect::{SemaEffect, SemaEffectOutcome};
-pub use engine::SemaEngine;
+pub use engine::CommandExecutor;
 pub use error::Error;
 pub use executor::Executor;
 pub use lowering::{BatchPlan, Lowering, OperationPlan};
 pub use observer::{ObserverChannel, ObserverSet, RecordedEvent, RecordingChannel};
+
+#[deprecated(
+    note = "use CommandExecutor; Sema is now classification, not executable command shape"
+)]
+pub use engine::CommandExecutor as SemaEngine;
 
 // Re-export the projection/observable-set traits for daemon convenience.
 pub use signal_frame::{ObservableSet, ObservationProjection};

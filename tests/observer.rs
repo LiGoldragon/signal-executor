@@ -11,9 +11,9 @@ struct DummyOperation(&'static str);
 
 #[test]
 fn no_op_observer_publishes_silently() {
-    let set: ObserverSet<DummyOperation> = ObserverSet::no_op();
+    let set: ObserverSet<DummyOperation, SemaEffect> = ObserverSet::no_op();
     set.publish_operation_received(&DummyOperation("Submit"));
-    set.publish_sema_effect_emitted(&SemaEffect::new(
+    set.publish_effect_emitted(&SemaEffect::new(
         SemaOperation::Assert,
         SemaEffectOutcome::Wrote {
             rows_written: 1,
@@ -25,9 +25,9 @@ fn no_op_observer_publishes_silently() {
 
 #[test]
 fn recording_channel_logs_operations_then_effects() {
-    let channel = RecordingChannel::<DummyOperation>::new();
+    let channel = RecordingChannel::<DummyOperation, SemaEffect>::new();
     channel.publish_operation_received(&DummyOperation("Increment"));
-    channel.publish_sema_effect_emitted(&SemaEffect::new(
+    channel.publish_effect_emitted(&SemaEffect::new(
         SemaOperation::Assert,
         SemaEffectOutcome::Wrote {
             rows_written: 3,
@@ -41,23 +41,23 @@ fn recording_channel_logs_operations_then_effects() {
         events[0],
         RecordedEvent::OperationReceived(DummyOperation("Increment"))
     ));
-    assert!(matches!(events[1], RecordedEvent::SemaEffectEmitted(_)));
+    assert!(matches!(events[1], RecordedEvent::EffectEmitted(_)));
 }
 
 #[test]
 fn observer_set_clones_share_underlying_channel() {
-    let channel = RecordingChannel::<DummyOperation>::new();
+    let channel = RecordingChannel::<DummyOperation, SemaEffect>::new();
     // Use the channel directly to capture events for assertion;
     // wrap a fresh copy in the observer set via the same Arc.
     use std::sync::Arc;
 
-    struct ArcChannel(Arc<RecordingChannel<DummyOperation>>);
-    impl ObserverChannel<DummyOperation> for ArcChannel {
+    struct ArcChannel(Arc<RecordingChannel<DummyOperation, SemaEffect>>);
+    impl ObserverChannel<DummyOperation, SemaEffect> for ArcChannel {
         fn publish_operation_received(&self, operation: &DummyOperation) {
             self.0.publish_operation_received(operation);
         }
-        fn publish_sema_effect_emitted(&self, effect: &SemaEffect) {
-            self.0.publish_sema_effect_emitted(effect);
+        fn publish_effect_emitted(&self, effect: &SemaEffect) {
+            self.0.publish_effect_emitted(effect);
         }
     }
 

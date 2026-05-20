@@ -1,7 +1,7 @@
 //! Mock Counter daemon used across executor tests.
 
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
-use signal_executor::{Lowering, OperationPlan, SemaEffect, SemaEffectOutcome, SemaEngine};
+use signal_executor::{CommandExecutor, Lowering, OperationPlan};
 use signal_frame::RequestPayload;
 use signal_sema::SemaOperation;
 use thiserror::Error;
@@ -35,6 +35,38 @@ impl CounterCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CounterEffect {
+    pub sema_operation: SemaOperation,
+    pub outcome: CounterEffectOutcome,
+}
+
+impl CounterEffect {
+    pub fn new(sema_operation: SemaOperation, outcome: CounterEffectOutcome) -> Self {
+        Self {
+            sema_operation,
+            outcome,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CounterEffectOutcome {
+    Wrote {
+        rows_written: u64,
+        rows_matched: u64,
+    },
+    Read {
+        rows_read: u64,
+    },
+    Stream {
+        subscription_token: u64,
+    },
+    Validated {
+        predicate_held: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CounterReply {
     Incremented { rows_written: u64 },
     Decremented { rows_matched: u64 },
@@ -65,6 +97,7 @@ impl Lowering for CounterLowering {
     type Operation = CounterOperation;
     type Reply = CounterReply;
     type Command = CounterCommand;
+    type Effect = CounterEffect;
 
     fn lower(
         &self,
@@ -98,7 +131,7 @@ impl Lowering for CounterLowering {
     fn reply_from_effects(
         &self,
         operation: &Self::Operation,
-        effects: &[SemaEffect],
+        effects: &[Self::Effect],
     ) -> Self::Reply {
         match operation {
             CounterOperation::Increment(_) => CounterReply::Incremented {
@@ -115,33 +148,39 @@ impl Lowering for CounterLowering {
     }
 }
 
-fn first_wrote_for(effects: &[SemaEffect], wanted: SemaOperation) -> u64 {
+fn first_wrote_for(effects: &[CounterEffect], wanted: SemaOperation) -> u64 {
     effects
         .iter()
-        .find_map(|effect| match (effect.operation, &effect.outcome) {
-            (operation, SemaEffectOutcome::Wrote { rows_written, .. }) if operation == wanted => {
+        .find_map(|effect| match (effect.sema_operation, &effect.outcome) {
+            (sema_operation, CounterEffectOutcome::Wrote { rows_written, .. })
+                if sema_operation == wanted =>
+            {
                 Some(*rows_written)
             }
             _ => None,
         })
         .unwrap_or(0)
 }
-fn first_matched_for(effects: &[SemaEffect], wanted: SemaOperation) -> u64 {
+fn first_matched_for(effects: &[CounterEffect], wanted: SemaOperation) -> u64 {
     effects
         .iter()
-        .find_map(|effect| match (effect.operation, &effect.outcome) {
-            (operation, SemaEffectOutcome::Wrote { rows_matched, .. }) if operation == wanted => {
+        .find_map(|effect| match (effect.sema_operation, &effect.outcome) {
+            (sema_operation, CounterEffectOutcome::Wrote { rows_matched, .. })
+                if sema_operation == wanted =>
+            {
                 Some(*rows_matched)
             }
             _ => None,
         })
         .unwrap_or(0)
 }
-fn first_read_for(effects: &[SemaEffect], wanted: SemaOperation) -> u64 {
+fn first_read_for(effects: &[CounterEffect], wanted: SemaOperation) -> u64 {
     effects
         .iter()
-        .find_map(|effect| match (effect.operation, &effect.outcome) {
-            (operation, SemaEffectOutcome::Read { rows_read }) if operation == wanted => {
+        .find_map(|effect| match (effect.sema_operation, &effect.outcome) {
+            (sema_operation, CounterEffectOutcome::Read { rows_read })
+                if sema_operation == wanted =>
+            {
                 Some(*rows_read)
             }
             _ => None,
@@ -177,53 +216,54 @@ impl Default for CounterEngine {
     }
 }
 
-impl SemaEngine for CounterEngine {
+impl CommandExecutor for CounterEngine {
     type Command = CounterCommand;
+    type Effect = CounterEffect;
     type Error = PoisonError;
     fn execute_atomic(
         &mut self,
         commands: Vec<Self::Command>,
-    ) -> Result<Vec<SemaEffect>, Self::Error> {
+    ) -> Result<Vec<Self::Effect>, Self::Error> {
         if self.poisoned {
             return Err(PoisonError);
         }
-        let effects: Vec<SemaEffect> = commands
+        let effects: Vec<CounterEffect> = commands
             .into_iter()
             .map(|command| match command.sema_operation() {
-                SemaOperation::Assert => SemaEffect::new(
+                SemaOperation::Assert => CounterEffect::new(
                     SemaOperation::Assert,
-                    SemaEffectOutcome::Wrote {
+                    CounterEffectOutcome::Wrote {
                         rows_written: 1,
                         rows_matched: 0,
                     },
                 ),
-                SemaOperation::Mutate => SemaEffect::new(
+                SemaOperation::Mutate => CounterEffect::new(
                     SemaOperation::Mutate,
-                    SemaEffectOutcome::Wrote {
+                    CounterEffectOutcome::Wrote {
                         rows_written: 1,
                         rows_matched: 1,
                     },
                 ),
-                SemaOperation::Retract => SemaEffect::new(
+                SemaOperation::Retract => CounterEffect::new(
                     SemaOperation::Retract,
-                    SemaEffectOutcome::Wrote {
+                    CounterEffectOutcome::Wrote {
                         rows_written: 1,
                         rows_matched: 1,
                     },
                 ),
-                SemaOperation::Match => SemaEffect::new(
+                SemaOperation::Match => CounterEffect::new(
                     SemaOperation::Match,
-                    SemaEffectOutcome::Read { rows_read: 7 },
+                    CounterEffectOutcome::Read { rows_read: 7 },
                 ),
-                SemaOperation::Subscribe => SemaEffect::new(
+                SemaOperation::Subscribe => CounterEffect::new(
                     SemaOperation::Subscribe,
-                    SemaEffectOutcome::Stream {
+                    CounterEffectOutcome::Stream {
                         subscription_token: 42,
                     },
                 ),
-                SemaOperation::Validate => SemaEffect::new(
+                SemaOperation::Validate => CounterEffect::new(
                     SemaOperation::Validate,
-                    SemaEffectOutcome::Validated {
+                    CounterEffectOutcome::Validated {
                         predicate_held: true,
                     },
                 ),
