@@ -155,7 +155,9 @@ fn frame_observer_bridge_delivers_projected_events_in_order() {
         events[0],
         DeliveredEvent::Operation(
             token,
-            OperationReceived { operation_kind: "Increment".into() },
+            OperationReceived {
+                operation_kind: "Increment".into()
+            },
         )
     );
     match &events[1] {

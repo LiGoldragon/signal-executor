@@ -27,13 +27,26 @@ where
     S: SemaEngine,
 {
     pub fn new(lowering: L, sema_engine: S, observers: ObserverSet<L::Operation>) -> Self {
-        Self { lowering, sema_engine, observers, last_engine_error: None }
+        Self {
+            lowering,
+            sema_engine,
+            observers,
+            last_engine_error: None,
+        }
     }
 
-    pub fn lowering(&self) -> &L { &self.lowering }
-    pub fn sema_engine(&self) -> &S { &self.sema_engine }
-    pub fn observers(&self) -> &ObserverSet<L::Operation> { &self.observers }
-    pub fn take_last_engine_error(&mut self) -> Option<S::Error> { self.last_engine_error.take() }
+    pub fn lowering(&self) -> &L {
+        &self.lowering
+    }
+    pub fn sema_engine(&self) -> &S {
+        &self.sema_engine
+    }
+    pub fn observers(&self) -> &ObserverSet<L::Operation> {
+        &self.observers
+    }
+    pub fn take_last_engine_error(&mut self) -> Option<S::Error> {
+        self.last_engine_error.take()
+    }
 
     pub fn execute(&mut self, request: Request<L::Operation>) -> Reply<L::Reply> {
         let total_operations = request.payloads().len();
@@ -59,24 +72,37 @@ where
             Ok(effects) => effects,
             Err(error) => {
                 self.last_engine_error = Some(error);
-                return Reply::Rejected { reason: RequestRejectionReason::Internal };
+                return Reply::Rejected {
+                    reason: RequestRejectionReason::Internal,
+                };
             }
         };
 
-        for effect in &effects { self.observers.publish_sema_effect_emitted(effect); }
+        for effect in &effects {
+            self.observers.publish_sema_effect_emitted(effect);
+        }
 
         let (head_op, tail_ops) = request.payloads.into_head_and_tail();
         let (head_start, head_end) = operation_spans[0];
-        let head_reply = self.lowering.reply_from_effects(&head_op, &effects[head_start..head_end]);
+        let head_reply = self
+            .lowering
+            .reply_from_effects(&head_op, &effects[head_start..head_end]);
 
-        let tail_replies: Vec<SubReply<L::Reply>> = tail_ops.iter().enumerate().map(|(tail_index, op)| {
-            let operation_index = tail_index + 1;
-            let (start, end) = operation_spans[operation_index];
-            SubReply::Ok(self.lowering.reply_from_effects(op, &effects[start..end]))
-        }).collect();
+        let tail_replies: Vec<SubReply<L::Reply>> = tail_ops
+            .iter()
+            .enumerate()
+            .map(|(tail_index, op)| {
+                let operation_index = tail_index + 1;
+                let (start, end) = operation_spans[operation_index];
+                SubReply::Ok(self.lowering.reply_from_effects(op, &effects[start..end]))
+            })
+            .collect();
         let per_operation = NonEmpty::from_head_and_tail(SubReply::Ok(head_reply), tail_replies);
 
-        Reply::Accepted { outcome: AcceptedOutcome::Committed, per_operation }
+        Reply::Accepted {
+            outcome: AcceptedOutcome::Committed,
+            per_operation,
+        }
     }
 }
 
@@ -96,7 +122,8 @@ fn aborted_reply<P>(total_operations: usize, failed_at: usize, reply_detail: P) 
         };
         sub_replies.push(sub_reply);
     }
-    let per_operation = NonEmpty::try_from_vec(sub_replies).expect("requests are statically non-empty");
+    let per_operation =
+        NonEmpty::try_from_vec(sub_replies).expect("requests are statically non-empty");
     Reply::Accepted {
         outcome: AcceptedOutcome::Aborted {
             failed_at,
