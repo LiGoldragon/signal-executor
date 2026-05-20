@@ -52,6 +52,71 @@ impl<Command> BatchPlan<Command> {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperationEffects<Effect> {
+    effects: Vec<Effect>,
+}
+
+impl<Effect> OperationEffects<Effect> {
+    pub fn new(effects: Vec<Effect>) -> Self {
+        Self { effects }
+    }
+
+    pub fn empty() -> Self {
+        Self {
+            effects: Vec::new(),
+        }
+    }
+
+    pub fn single(effect: Effect) -> Self {
+        Self {
+            effects: vec![effect],
+        }
+    }
+
+    pub fn effects(&self) -> &[Effect] {
+        &self.effects
+    }
+
+    pub fn into_effects(self) -> Vec<Effect> {
+        self.effects
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatchEffects<Effect> {
+    operations: NonEmpty<OperationEffects<Effect>>,
+}
+
+impl<Effect> BatchEffects<Effect> {
+    pub fn new(operations: NonEmpty<OperationEffects<Effect>>) -> Self {
+        Self { operations }
+    }
+
+    pub fn single(operation: OperationEffects<Effect>) -> Self {
+        Self {
+            operations: NonEmpty::single(operation),
+        }
+    }
+
+    pub fn from_head_and_tail(
+        head: OperationEffects<Effect>,
+        tail: Vec<OperationEffects<Effect>>,
+    ) -> Self {
+        Self {
+            operations: NonEmpty::from_head_and_tail(head, tail),
+        }
+    }
+
+    pub fn operations(&self) -> &NonEmpty<OperationEffects<Effect>> {
+        &self.operations
+    }
+
+    pub fn into_operations(self) -> NonEmpty<OperationEffects<Effect>> {
+        self.operations
+    }
+}
+
 pub trait Lowering {
     type Operation: RequestPayload;
     type Reply;

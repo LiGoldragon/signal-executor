@@ -235,7 +235,7 @@ fn engine_rejection_returns_batch_aborted_reply() {
 
 #[test]
 fn multi_operation_engine_rejection_is_all_or_nothing() {
-    // Witnesses the atomicity contract: when execute_atomic returns
+    // Witnesses the atomicity contract: when execute_atomic_batch returns
     // Err for a multi-operation request, no effect is visible to the
     // caller (the engine's commit counter stays at 0) and the
     // wire reply is a batch abort. No successful partial reply ever

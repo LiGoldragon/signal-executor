@@ -40,7 +40,7 @@ pub use effect::{SemaEffect, SemaEffectOutcome};
 pub use engine::CommandExecutor;
 pub use error::Error;
 pub use executor::Executor;
-pub use lowering::{BatchPlan, Lowering, OperationPlan};
+pub use lowering::{BatchEffects, BatchPlan, Lowering, OperationEffects, OperationPlan};
 pub use observer::{ObserverChannel, ObserverSet, RecordedEvent, RecordingChannel};
 
 #[deprecated(

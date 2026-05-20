@@ -1,11 +1,11 @@
-//! [`SemaEffect`]: what happened after a [`SemaOperation`] committed.
+//! [`SemaEffect`]: a small generic Sema-classified effect record.
 //!
-//! A daemon's [`SemaEngine`](crate::SemaEngine) returns one
-//! [`SemaEffect`] per requested operation, in request order, after
-//! the atomic transaction commits. The effect carries enough
-//! information for [`Lowering::reply_from_effects`](crate::Lowering::reply_from_effects)
-//! to assemble a per-operation reply from the slice of effects the
-//! operation contributed.
+//! The executor is generic over component-local effect records. This
+//! type remains available for simple daemons and tests that only need
+//! to describe a Sema operation class plus a compact outcome. More
+//! specific components should define their own effect type and use
+//! [`Lowering::reply_from_effects`](crate::Lowering::reply_from_effects)
+//! over that type.
 //!
 //! The `outcome` field is a closed enum keyed off the operation
 //! class -- write operations report row counts, read operations

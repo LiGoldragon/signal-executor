@@ -1,7 +1,9 @@
 //! Mock Counter daemon used across executor tests.
 
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
-use signal_executor::{CommandExecutor, Lowering, OperationPlan};
+use signal_executor::{
+    BatchEffects, BatchPlan, CommandExecutor, Lowering, OperationEffects, OperationPlan,
+};
 use signal_frame::RequestPayload;
 use signal_sema::SemaOperation;
 use thiserror::Error;
@@ -220,57 +222,77 @@ impl CommandExecutor for CounterEngine {
     type Command = CounterCommand;
     type Effect = CounterEffect;
     type Error = PoisonError;
-    fn execute_atomic(
+    fn execute_atomic_batch(
         &mut self,
-        commands: Vec<Self::Command>,
-    ) -> Result<Vec<Self::Effect>, Self::Error> {
+        plan: BatchPlan<Self::Command>,
+    ) -> Result<BatchEffects<Self::Effect>, Self::Error> {
         if self.poisoned {
             return Err(PoisonError);
         }
-        let effects: Vec<CounterEffect> = commands
+        let (head_plan, tail_plans) = plan.into_operations().into_head_and_tail();
+        let head_effects = self.execute_operation_plan(head_plan);
+        let tail_effects = tail_plans
             .into_iter()
-            .map(|command| match command.sema_operation() {
-                SemaOperation::Assert => CounterEffect::new(
-                    SemaOperation::Assert,
-                    CounterEffectOutcome::Wrote {
-                        rows_written: 1,
-                        rows_matched: 0,
-                    },
-                ),
-                SemaOperation::Mutate => CounterEffect::new(
-                    SemaOperation::Mutate,
-                    CounterEffectOutcome::Wrote {
-                        rows_written: 1,
-                        rows_matched: 1,
-                    },
-                ),
-                SemaOperation::Retract => CounterEffect::new(
-                    SemaOperation::Retract,
-                    CounterEffectOutcome::Wrote {
-                        rows_written: 1,
-                        rows_matched: 1,
-                    },
-                ),
-                SemaOperation::Match => CounterEffect::new(
-                    SemaOperation::Match,
-                    CounterEffectOutcome::Read { rows_read: 7 },
-                ),
-                SemaOperation::Subscribe => CounterEffect::new(
-                    SemaOperation::Subscribe,
-                    CounterEffectOutcome::Stream {
-                        subscription_token: 42,
-                    },
-                ),
-                SemaOperation::Validate => CounterEffect::new(
-                    SemaOperation::Validate,
-                    CounterEffectOutcome::Validated {
-                        predicate_held: true,
-                    },
-                ),
-            })
+            .map(|operation_plan| self.execute_operation_plan(operation_plan))
+            .collect();
+        Ok(BatchEffects::from_head_and_tail(head_effects, tail_effects))
+    }
+}
+
+impl CounterEngine {
+    fn execute_operation_plan(
+        &mut self,
+        operation_plan: OperationPlan<CounterCommand>,
+    ) -> OperationEffects<CounterEffect> {
+        let effects: Vec<CounterEffect> = operation_plan
+            .into_commands()
+            .into_iter()
+            .map(|command| self.execute_command(command))
             .collect();
         self.committed += effects.len() as u64;
-        Ok(effects)
+        OperationEffects::new(effects)
+    }
+
+    fn execute_command(&self, command: CounterCommand) -> CounterEffect {
+        match command.sema_operation() {
+            SemaOperation::Assert => CounterEffect::new(
+                SemaOperation::Assert,
+                CounterEffectOutcome::Wrote {
+                    rows_written: 1,
+                    rows_matched: 0,
+                },
+            ),
+            SemaOperation::Mutate => CounterEffect::new(
+                SemaOperation::Mutate,
+                CounterEffectOutcome::Wrote {
+                    rows_written: 1,
+                    rows_matched: 1,
+                },
+            ),
+            SemaOperation::Retract => CounterEffect::new(
+                SemaOperation::Retract,
+                CounterEffectOutcome::Wrote {
+                    rows_written: 1,
+                    rows_matched: 1,
+                },
+            ),
+            SemaOperation::Match => CounterEffect::new(
+                SemaOperation::Match,
+                CounterEffectOutcome::Read { rows_read: 7 },
+            ),
+            SemaOperation::Subscribe => CounterEffect::new(
+                SemaOperation::Subscribe,
+                CounterEffectOutcome::Stream {
+                    subscription_token: 42,
+                },
+            ),
+            SemaOperation::Validate => CounterEffect::new(
+                SemaOperation::Validate,
+                CounterEffectOutcome::Validated {
+                    predicate_held: true,
+                },
+            ),
+        }
     }
 }
 

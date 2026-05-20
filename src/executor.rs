@@ -5,7 +5,7 @@ use signal_frame::{
 };
 
 use crate::engine::CommandExecutor;
-use crate::lowering::Lowering;
+use crate::lowering::{BatchPlan, Lowering};
 use crate::observer::ObserverSet;
 
 pub struct Executor<L, S>
@@ -52,18 +52,12 @@ where
 
     pub fn execute(&mut self, request: Request<L::Operation>) -> Reply<L::Reply> {
         let total_operations = request.payloads().len();
-        let mut commands: Vec<L::Command> = Vec::new();
-        let mut operation_spans: Vec<(usize, usize)> = Vec::with_capacity(total_operations);
+        let mut operation_plans = Vec::with_capacity(total_operations);
 
         for (operation_index, operation) in request.payloads().iter().enumerate() {
             self.observers.publish_operation_received(operation);
             match self.lowering.lower(operation) {
-                Ok(operation_plan) => {
-                    let span_start = commands.len();
-                    commands.extend(operation_plan.into_commands());
-                    let span_end = commands.len();
-                    operation_spans.push((span_start, span_end));
-                }
+                Ok(operation_plan) => operation_plans.push(operation_plan),
                 Err(reply_detail) => {
                     return operation_aborted_reply(
                         total_operations,
@@ -74,7 +68,11 @@ where
             }
         }
 
-        let effects = match self.command_executor.execute_atomic(commands) {
+        let plan = BatchPlan::new(
+            NonEmpty::try_from_vec(operation_plans).expect("requests are statically non-empty"),
+        );
+
+        let batch_effects = match self.command_executor.execute_atomic_batch(plan) {
             Ok(effects) => effects,
             Err(error) => {
                 self.last_engine_error = Some(error);
@@ -82,25 +80,30 @@ where
             }
         };
 
-        for effect in &effects {
-            self.observers.publish_effect_emitted(effect);
+        for operation_effects in batch_effects.operations() {
+            for effect in operation_effects.effects() {
+                self.observers.publish_effect_emitted(effect);
+            }
         }
 
         let (head_operation, tail_operations) = request.payloads.into_head_and_tail();
-        let (head_start, head_end) = operation_spans[0];
+        let (head_effects, tail_effects) = batch_effects.into_operations().into_head_and_tail();
+        assert_eq!(
+            tail_operations.len(),
+            tail_effects.len(),
+            "command executor returned a batch effect shape that does not match the request shape",
+        );
         let head_reply = self
             .lowering
-            .reply_from_effects(&head_operation, &effects[head_start..head_end]);
+            .reply_from_effects(&head_operation, head_effects.effects());
 
         let tail_replies: Vec<SubReply<L::Reply>> = tail_operations
             .iter()
-            .enumerate()
-            .map(|(tail_index, operation)| {
-                let operation_index = tail_index + 1;
-                let (start, end) = operation_spans[operation_index];
+            .zip(tail_effects.iter())
+            .map(|(operation, operation_effects)| {
                 SubReply::Ok(
                     self.lowering
-                        .reply_from_effects(operation, &effects[start..end]),
+                        .reply_from_effects(operation, operation_effects.effects()),
                 )
             })
             .collect();
