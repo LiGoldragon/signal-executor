@@ -1,0 +1,25 @@
+{}
+
+[]
+
+[]
+
+[]
+
+{
+  OperationPlan (Command)
+  BatchPlan ((Vec OperationPlan))
+  Command (Text)
+  Effect (Text)
+  ExecutorOutcome [Committed NotCommitted Unknown]
+  Text (String)
+  Identifier (u64)
+  Name (String)
+  Path (String)
+  Status [Concept Active Retired]
+}
+
+[
+  (Version 0 1)
+  (Status Concept)
+]
