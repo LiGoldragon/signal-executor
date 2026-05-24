@@ -239,6 +239,19 @@ tests/round_trip.rs        End-to-end acceptance, rejection, atomicity,
                            and observer-ordering witnesses
 ```
 
+## Macro-pattern integration
+
+**Status:** integrated into the brilliant macro library pattern per `reports/designer/326-v13-spirit-complete-schema-vision.md §3` (schemas as macro-pattern instance).
+
+**Role:** this crate is the generic command executor. It owns the `Command` / `Effect` / `Dispatcher` machinery, the `ObserverSet`, the `FrameObserverBridge`, and the atomicity / rejection / ordering contracts component daemons compose with.
+
+**Integration target:** generic command executor; component daemons compose with macro-emitted Command/Effect/dispatcher. Under the schema-engine upgrade, the per-component Command enum, Effect enum, and dispatcher are emitted by the brilliant macro library from the `.schema` file's request/reply/event declarations; those emitted types implement this crate's `Command` / `Effect` traits and plug into the same dispatcher composition the hand-written variants use today. The executor surface itself does not change.
+
+**References:**
+- `reports/designer/326-v13-spirit-complete-schema-vision.md` — schema language + macro pattern
+- `reports/designer/324-migration-mvp-spirit-handover-re-specification.md` — migration MVP
+- `reports/operator/174-schema-import-header-design-critique-2026-05-24.md` — lowering + AssembledSchema form
+
 ## See Also
 
 - `/git/github.com/LiGoldragon/signal-frame/ARCHITECTURE.md`
