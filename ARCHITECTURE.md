@@ -241,11 +241,11 @@ tests/round_trip.rs        End-to-end acceptance, rejection, atomicity,
 
 ## Macro-pattern integration
 
-**Status:** integrated into the brilliant macro library pattern per `reports/designer/326-v13-spirit-complete-schema-vision.md §3` (schemas as macro-pattern instance).
+**Status:** integrated into the `schema-rust` composer + `emit_schema!` proc-macro pattern per `reports/designer/340-schema-emission-no-legacy-signal-channel-2026-05-25.md` + `reports/operator/184-schema-macro-old-emitter-audit-2026-05-25.md` (schemas as `AssembledSchema` input to the `schema-rust` composer; emission top-down through `emit_schema!`). Supersedes `/326-v13`'s "brilliant macro library" framing which endorsed extending `signal-frame/macros/` — that direction is reversed per psyche record 639.
 
 **Role:** this crate is the generic command executor. It owns the `Command` / `Effect` / `Dispatcher` machinery, the `ObserverSet`, the `FrameObserverBridge`, and the atomicity / rejection / ordering contracts component daemons compose with.
 
-**Integration target:** generic command executor; component daemons compose with macro-emitted Command/Effect/dispatcher. Under the schema-engine upgrade, the per-component Command enum, Effect enum, and dispatcher are emitted by the brilliant macro library from the `.schema` file's request/reply/event declarations; those emitted types implement this crate's `Command` / `Effect` traits and plug into the same dispatcher composition the hand-written variants use today. The executor surface itself does not change.
+**Integration target:** generic command executor; component daemons compose with composer-emitted Command/Effect/dispatcher. Under the schema-engine upgrade, the per-component Command enum, Effect enum, and dispatcher are emitted by the `schema-rust` composer (invoked through the `emit_schema!` proc-macro) from the `.schema` file's request/reply/event declarations; those emitted types implement this crate's `Command` / `Effect` traits and plug into the same dispatcher composition the hand-written variants use today. The executor surface itself does not change.
 
 **References:**
 - `reports/designer/326-v13-spirit-complete-schema-vision.md` — schema language + macro pattern
