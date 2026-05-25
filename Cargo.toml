@@ -13,8 +13,8 @@ name = "signal_executor"
 path = "src/lib.rs"
 
 [dependencies]
-signal-frame = { git = "https://github.com/LiGoldragon/signal-frame.git", branch = "main" }
-signal-sema  = { git = "https://github.com/LiGoldragon/signal-sema.git", branch = "main" }
+signal-frame = { git = "https://github.com/LiGoldragon/signal-frame.git", branch = "operator-full-schema-spirit-2026-05-26" }
+signal-sema  = { git = "https://github.com/LiGoldragon/signal-sema.git", branch = "operator-full-schema-spirit-2026-05-26" }
 rkyv         = { version = "0.8", default-features = false, features = ["std", "bytecheck", "little_endian", "pointer_width_32", "unaligned"] }
 thiserror    = "2"
 
