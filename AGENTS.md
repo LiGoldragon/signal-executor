@@ -12,15 +12,16 @@ contract; it has no public wire surface of its own.
 
 ## Required Local Reading
 
-1. `ARCHITECTURE.md`
-2. `skills.md`
-3. `/home/li/primary/skills/rust-discipline.md`
-4. `/home/li/primary/skills/rust/errors.md`
-5. `/home/li/primary/skills/rust/methods.md`
-6. `/home/li/primary/skills/contract-repo.md`
-7. `/home/li/primary/skills/naming.md`
-8. `/home/li/primary/skills/nix-discipline.md`
-9. `/home/li/primary/skills/jj.md`
+1. `INTENT.md`
+2. `ARCHITECTURE.md`
+3. `skills.md`
+4. `/home/li/primary/skills/rust-discipline.md`
+5. `/home/li/primary/skills/rust/errors.md`
+6. `/home/li/primary/skills/rust/methods.md`
+7. `/home/li/primary/skills/contract-repo.md`
+8. `/home/li/primary/skills/naming.md`
+9. `/home/li/primary/skills/nix-discipline.md`
+10. `/home/li/primary/skills/jj.md`
 
 ## Local Rules
 

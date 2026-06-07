@@ -130,7 +130,7 @@ dependencies = [
 [[package]]
 name = "nota-codec"
 version = "0.1.0"
-source = "git+https://github.com/LiGoldragon/nota-codec.git?branch=main#d00fbf53808f941a173bfe473ca062e13029339e"
+source = "git+https://github.com/LiGoldragon/nota-codec.git?branch=main#f761421c383121a04df761a444a3778d1c0b137d"
 dependencies = [
  "camino",
  "nota-derive",
@@ -140,7 +140,7 @@ dependencies = [
 [[package]]
 name = "nota-derive"
 version = "0.1.0"
-source = "git+https://github.com/LiGoldragon/nota-derive.git?branch=main#cde0e8262f2f90afbdf26d9b1b3561376723d816"
+source = "git+https://github.com/LiGoldragon/nota-derive.git?branch=main#11347da1ff4425ff4e743c15a3e3ec322b54ea9a"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -258,24 +258,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
-name = "schema"
-version = "0.1.0"
-source = "git+https://github.com/LiGoldragon/schema.git?branch=operator-full-schema-spirit-2026-05-26#a35b3e1e0a30d27bb19f4d88c03b1d0e73dd3b82"
-dependencies = [
- "nota-codec",
-]
-
-[[package]]
-name = "schema-rust"
-version = "0.1.0"
-source = "git+https://github.com/LiGoldragon/signal-frame.git?branch=operator-full-schema-spirit-2026-05-26#4d3264ff8ca4fb619a84155a7eb1bf39d2d3b3ef"
-dependencies = [
- "proc-macro2",
- "quote",
- "schema",
-]
-
-[[package]]
 name = "signal-executor"
 version = "0.1.0"
 dependencies = [
@@ -290,7 +272,7 @@ dependencies = [
 [[package]]
 name = "signal-frame"
 version = "0.1.0"
-source = "git+https://github.com/LiGoldragon/signal-frame.git?branch=operator-full-schema-spirit-2026-05-26#4d3264ff8ca4fb619a84155a7eb1bf39d2d3b3ef"
+source = "git+https://github.com/LiGoldragon/signal-frame.git?branch=main#ed066bcce411faf4cb4c7e8aad45cf72f8c9aa9e"
 dependencies = [
  "nota-codec",
  "paste",
@@ -302,24 +284,21 @@ dependencies = [
 [[package]]
 name = "signal-frame-macros"
 version = "0.1.0"
-source = "git+https://github.com/LiGoldragon/signal-frame.git?branch=operator-full-schema-spirit-2026-05-26#4d3264ff8ca4fb619a84155a7eb1bf39d2d3b3ef"
+source = "git+https://github.com/LiGoldragon/signal-frame.git?branch=main#ed066bcce411faf4cb4c7e8aad45cf72f8c9aa9e"
 dependencies = [
  "nota-codec",
  "proc-macro2",
  "quote",
- "schema",
- "schema-rust",
  "syn",
 ]
 
 [[package]]
 name = "signal-sema"
 version = "0.1.0"
-source = "git+https://github.com/LiGoldragon/signal-sema.git?branch=operator-full-schema-spirit-2026-05-26#a17476f03fc0615805dddc6738dea1c3c4df140e"
+source = "git+https://github.com/LiGoldragon/signal-sema.git?branch=main#c132e9a06431617055bad2a9bae7bbecdeacd4b0"
 dependencies = [
  "nota-codec",
  "rkyv",
- "signal-frame",
  "thiserror",
 ]
 

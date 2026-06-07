@@ -7,7 +7,7 @@ use signal_executor::{
     ObserverDelivery, ObserverSet,
 };
 use signal_frame::{Reply, RequestPayload, SubscriptionTokenInner};
-use signal_sema::{SemaObservation, SemaOperation, SemaOutcome};
+use signal_sema::{SemaOutcome, ToSemaOutcome};
 
 mod counter;
 
@@ -25,7 +25,18 @@ struct OperationReceived {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct EffectEmitted {
-    observation: SemaObservation,
+    outcome: EffectOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum EffectOutcome {
+    Applied,
+    Removed,
+    Changed,
+    Observed,
+    StreamOpened,
+    Validated,
+    NoChange,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,9 +111,16 @@ impl ObservationProjection for CounterProjection {
     }
 
     fn effect_event(&self, effect: &CounterCommandEffect) -> EffectEmitted {
-        EffectEmitted {
-            observation: effect.sema_observation(),
-        }
+        let outcome = match effect.effect().to_sema_outcome() {
+            SemaOutcome::Asserted => EffectOutcome::Applied,
+            SemaOutcome::Retracted => EffectOutcome::Removed,
+            SemaOutcome::Mutated => EffectOutcome::Changed,
+            SemaOutcome::Matched => EffectOutcome::Observed,
+            SemaOutcome::Subscribed => EffectOutcome::StreamOpened,
+            SemaOutcome::Validated => EffectOutcome::Validated,
+            SemaOutcome::NoChange => EffectOutcome::NoChange,
+        };
+        EffectEmitted { outcome }
     }
 }
 
@@ -168,10 +186,7 @@ async fn frame_observer_bridge_delivers_projected_events_in_order() {
     match &events[1] {
         DeliveredEvent::Effect(t, event) => {
             assert_eq!(*t, token);
-            assert_eq!(
-                event.observation,
-                SemaObservation::new(SemaOperation::Assert, SemaOutcome::Asserted),
-            );
+            assert_eq!(event.outcome, EffectOutcome::Applied);
         }
         _ => panic!("expected effect event second"),
     }
